@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from collections import defaultdict
+
+from explainable_reranker.data.sentence_index import IndexedSentence
+from explainable_reranker.topa.adapter import TopaPageResponse
+
+
+SYSTEM_INSTRUCTIONS = """You are a grounded ranking teacher for Korean book recommendation.
+Use only the provided sentence IDs as evidence. Do not invent sentence IDs or quote unsupported facts.
+Return strict JSON only."""
+
+
+def build_listwise_prompt(
+    response: TopaPageResponse,
+    sentence_index: list[IndexedSentence],
+    *,
+    max_sentences_per_book: int = 16,
+) -> str:
+    evidence_by_book = _evidence_by_book(sentence_index)
+    blocks = [
+        SYSTEM_INSTRUCTIONS,
+        "",
+        "Task A: rank candidate books by relevance to the query.",
+        "Return JSON with ranking sorted by descending score in the 0..3 range.",
+        "",
+        f"[QUERY] {response.query}",
+    ]
+    for candidate in response.candidates:
+        blocks.append(f"[BOOK {candidate.book_id}] title: {candidate.title}")
+        for sentence in evidence_by_book[candidate.book_id][:max_sentences_per_book]:
+            blocks.append(f"  {sentence.sentence_id}) {sentence.text}")
+    blocks.append(
+        'Schema: {"ranking":[{"book":"book_id","score":0.0}],"rationales":{}}'
+    )
+    return "\n".join(blocks)
+
+
+def build_rationale_prompt(
+    response: TopaPageResponse,
+    sentence_index: list[IndexedSentence],
+    *,
+    ranked_book_ids: list[str],
+    top_k: int = 10,
+    max_sentences_per_book: int = 16,
+) -> str:
+    evidence_by_book = _evidence_by_book(sentence_index)
+    candidate_by_id = {candidate.book_id: candidate for candidate in response.candidates}
+    blocks = [
+        SYSTEM_INSTRUCTIONS,
+        "",
+        "Task B: choose grounded rationale sentence IDs for each top-ranked book.",
+        "Select 1 to 3 sentence IDs per book. Use only IDs shown below.",
+        "",
+        f"[QUERY] {response.query}",
+    ]
+    for book_id in ranked_book_ids[:top_k]:
+        candidate = candidate_by_id[book_id]
+        blocks.append(f"[BOOK {candidate.book_id}] title: {candidate.title}")
+        for sentence in evidence_by_book[book_id][:max_sentences_per_book]:
+            blocks.append(f"  {sentence.sentence_id}) {sentence.text}")
+    blocks.append(
+        'Schema: {"ranking":[],"rationales":{"book_id":{"sentence_ids":["..."],"reason":"one grounded sentence"}}}'
+    )
+    return "\n".join(blocks)
+
+
+def _evidence_by_book(sentence_index: list[IndexedSentence]) -> dict[str, list[IndexedSentence]]:
+    grouped: dict[str, list[IndexedSentence]] = defaultdict(list)
+    for sentence in sentence_index:
+        grouped[sentence.book_id].append(sentence)
+    return grouped
