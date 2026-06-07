@@ -1,0 +1,15 @@
+{
+  "q_demo_001": {
+    "relevance_by_book": {
+      "book_001": 3,
+      "book_003": 2,
+      "book_002": 0
+    },
+    "rationale_validity_by_book": {
+      "book_001": 5,
+      "book_003": 4,
+      "book_002": 2
+    },
+    "notes": "Dummy independent-eval fixture that mimics human qrels. Not a teacher label."
+  }
+}
