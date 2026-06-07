@@ -1,0 +1,75 @@
+{
+  "response_id": "resp_demo_001",
+  "query_id": "q_demo_001",
+  "query": "잔잔하고 위로되는 가족 이야기",
+  "topa_pipeline_version": "topa.page.local-dummy.v1",
+  "schema_version": "topa.page.v1",
+  "retrieval_params": {
+    "top_k": 3,
+    "rrf": true
+  },
+  "candidates": [
+    {
+      "book_id": "book_001",
+      "title": "아버지의 정원",
+      "rank": 1,
+      "score": 0.82,
+      "genres": ["소설"],
+      "evidence": [
+        {
+          "source_type": "synopsis",
+          "source_id": "syn_001",
+          "text": "아버지가 떠난 뒤 남은 가족은 오래된 정원을 함께 가꾸며 빈자리를 천천히 받아들인다."
+        },
+        {
+          "source_type": "review",
+          "source_id": "rev_101",
+          "text": "상실을 크게 울부짖기보다 조용한 장면으로 위로를 건넨다."
+        },
+        {
+          "source_type": "review",
+          "source_id": "rev_102",
+          "text": "가족이 서로에게 말을 아끼면서도 다시 손을 내미는 과정이 따뜻하다."
+        }
+      ]
+    },
+    {
+      "book_id": "book_002",
+      "title": "검은 항구의 추적자",
+      "rank": 2,
+      "score": 0.57,
+      "genres": ["미스터리"],
+      "evidence": [
+        {
+          "source_type": "synopsis",
+          "source_id": "syn_002",
+          "text": "항구 도시에서 벌어진 연쇄 사건을 따라 형사가 숨겨진 거래를 추적한다."
+        },
+        {
+          "source_type": "review",
+          "source_id": "rev_201",
+          "text": "빠른 전개와 반전은 강하지만 가족 서사는 거의 드러나지 않는다."
+        }
+      ]
+    },
+    {
+      "book_id": "book_003",
+      "title": "여름의 편지",
+      "rank": 3,
+      "score": 0.53,
+      "genres": ["소설"],
+      "evidence": [
+        {
+          "source_type": "synopsis",
+          "source_id": "syn_003",
+          "text": "오래 헤어진 자매가 여름 별장에서 편지를 발견하며 과거의 오해를 풀어간다."
+        },
+        {
+          "source_type": "review",
+          "source_id": "rev_301",
+          "text": "잔잔한 문체로 관계의 회복을 그리지만 결말은 다소 급하다."
+        }
+      ]
+    }
+  ]
+}

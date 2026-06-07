@@ -1,0 +1,25 @@
+# W1 default allowlist. Regenerate with scripts/inspect_lora_targets.py when the
+# actual bge-reranker-v2-m3 module tree is available in the training environment.
+base_model: BAAI/bge-reranker-v2-m3
+strategy: attention_projection_allowlist
+generator_adapter:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+predictor_adapter:
+  r: 16
+  alpha: 32
+  dropout: 0.05
+target_module_patterns:
+  - q_proj
+  - k_proj
+  - v_proj
+  - o_proj
+  - query
+  - key
+  - value
+  - attention.output.dense
+excluded_module_patterns:
+  - classifier
+  - score
+  - pooler
