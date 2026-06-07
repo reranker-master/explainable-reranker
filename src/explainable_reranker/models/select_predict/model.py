@@ -4,6 +4,10 @@ from dataclasses import dataclass
 
 from explainable_reranker.data.sentence_index import IndexedSentence, TokenOffset
 from explainable_reranker.distill.dataset import CandidateTrainingExample, QueryTrainingBatch
+from explainable_reranker.models.select_predict.backends import (
+    EvidencePredictorBackend,
+    SentenceGeneratorBackend,
+)
 from explainable_reranker.models.select_predict.generator import GateOutput, LexicalSentenceGenerator
 from explainable_reranker.models.select_predict.predictor import PackedEvidencePredictor
 
@@ -36,11 +40,11 @@ class SelectThenPredictModel:
 
     def __init__(
         self,
-        generator: LexicalSentenceGenerator | None = None,
-        predictor: PackedEvidencePredictor | None = None,
+        generator: SentenceGeneratorBackend | None = None,
+        predictor: EvidencePredictorBackend | None = None,
     ):
-        self.generator = generator or LexicalSentenceGenerator()
-        self.predictor = predictor or PackedEvidencePredictor()
+        self.generator: SentenceGeneratorBackend = generator or LexicalSentenceGenerator()
+        self.predictor: EvidencePredictorBackend = predictor or PackedEvidencePredictor()
 
     def rerank_batch(self, batch: QueryTrainingBatch) -> list[RerankOutput]:
         outputs = [self.score_candidate(batch.query, candidate) for candidate in batch.candidates]
