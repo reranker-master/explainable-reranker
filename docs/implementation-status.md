@@ -34,10 +34,20 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
 - Neural model: `models.select_predict.backends` defines the Generator/Predictor
   backend protocols (lexical stand-ins satisfy them) plus `HFSentenceGenerator`/
   `HFPackedEvidencePredictor` (bge + LoRA, lazy torch/transformers/peft) and
-  `load_lora_config` for `configs/lora_target_modules.yaml`.
+  `load_lora_config` for `configs/lora_target_modules.yaml`. The neural forward
+  passes are now implemented: G does a single-forward encode + per-sentence
+  mean-pool over char offsets → linear head → π_i; P runs the (query, packed
+  evidence) cross-encoder → score. Both expose `trainable_parameters`,
+  `train_mode`/`eval_mode`, and `save_pretrained`/`from_pretrained`, default to
+  CUDA + bf16 autocast (GB10/DGX Spark), and fall back to CPU/fp32 off-GPU.
 - Training: `distill.training.TrainableSelectionGenerator` + `train_selection`
   run a real analytic-gradient loop (BCE + sparsity) that overfits a separable
   set without collapse; `save_checkpoint`/`load_checkpoint` persist the adapter.
+  `distill.neural_training.train_joint` is the GPU counterpart: a torch autograd
+  joint-distillation loop (listwise KD + select BCE + sparsity + continuity +
+  hard anchor) that follows the warmup→anneal schedule (teacher citations early,
+  generator selections late). `models.select_predict.neural_model.load_neural_model`
+  reloads a trained checkpoint straight into the serving model.
 - Serving: `serve.http_app.RerankApp` exposes drop-in `POST /rerank` and
   `GET /healthz` with pure, testable routing over stdlib `http.server`.
 
@@ -49,8 +59,10 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
   `transformers` and the actual `BAAI/bge-reranker-v2-m3` weights.
 - Swap `ScriptedChatModel` for `BedrockClaudeChatModel` and run pilot
   self-consistency plus spot-check labeling.
-- Implement the lazy `logits`/`score` forward passes in the HF backends and train
-  the LoRA Generator and Predictor on GPU.
+- Install the GPU extras on the DGX Spark and train the LoRA Generator/Predictor:
+  `pip install -e '.[gpu]'` then `scripts/train_neural.py` (see "GPU training on
+  GB10 / DGX Spark" below). The forward passes are implemented; what remains is
+  running the actual training with real labels and weights.
 - Collect the independent human evaluation set and adjudicate disagreements.
 
 ## Local verification
@@ -59,3 +71,32 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
 PYTHONPATH=src python3 -m unittest discover -s tests
 PYTHONPATH=src python3 scripts/run_dummy_pipeline.py
 ```
+
+## GPU training on GB10 / DGX Spark
+
+The core package is dependency-free; the neural stack is an optional extra.
+
+```bash
+# 1. Install the GPU extras (torch/transformers/peft/accelerate).
+pip install -e '.[gpu]'
+
+# 2. (Once) inspect real LoRA target modules from the bge-reranker-v2-m3 tree.
+PYTHONPATH=src python3 scripts/inspect_lora_targets.py \
+    --model-id BAAI/bge-reranker-v2-m3 --output configs/lora_target_modules.yaml
+
+# 3. Joint distillation: snapshots + teacher labels -> adapter checkpoints.
+PYTHONPATH=src python3 scripts/train_neural.py \
+    --snapshots data/snapshots --labels data/labels \
+    --lora-config configs/lora_target_modules.yaml \
+    --out checkpoints/neural-v1 --epochs 3 \
+    --device cuda --compute-dtype bfloat16
+
+# 4. Serve the trained model (drop-in /rerank).
+#    load_neural_model("checkpoints/neural-v1", "configs/lora_target_modules.yaml")
+#    -> pass as `model=` to serve.api.rerank_payload / serve.http_app.RerankApp.
+```
+
+Defaults target the GB10: CUDA device auto-detect, bf16 autocast over fp32 master
+weights (LoRA adapters + heads), `max_length=8192` to fit ~12-16 evidence
+sentences per book (plan §1.5/§2.1). Sentences that exceed `max_length` fall back
+to the CLS state and are counted in `HFSentenceGenerator.truncated_sentences`.

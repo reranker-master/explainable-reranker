@@ -10,6 +10,17 @@ readme = "plan.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+# GPU training/inference stack for the neural select-then-predict backend.
+# Installed on the DGX Spark (GB10); the core package stays dependency-free.
+gpu = [
+    "torch>=2.4",
+    "transformers>=4.44",
+    "peft>=0.12",
+    "accelerate>=0.33",
+    "safetensors>=0.4",
+]
+
 [tool.setuptools.packages.find]
 where = ["src"]
 
