@@ -65,9 +65,15 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
   set without collapse; `save_checkpoint`/`load_checkpoint` persist the adapter.
   `distill.neural_training.train_joint` is the GPU counterpart: a torch autograd
   joint-distillation loop (listwise KD + select BCE + sparsity + continuity +
-  hard anchor) that follows the warmup→anneal schedule (teacher citations early,
-  generator selections late). `models.select_predict.neural_model.load_neural_model`
-  reloads a trained checkpoint straight into the serving model.
+  hard anchor) that follows the warmup→anneal schedule. Warm-up (plan §2.4-1)
+  adapts the Predictor to full input (z≡1) and random partial selection via
+  `warmup_packing_ids` so it tolerates any later Generator selection (§2.9-2's
+  make-or-break robustness); after warm-up the packing anneals teacher citations
+  early → generator selections late, and the gate sharpens with the HardConcrete
+  temperature schedule. (Generator selection supervision still runs during warm-up;
+  a strict Predictor-only warm-up that freezes the Generator is a possible refinement.)
+  `models.select_predict.neural_model.load_neural_model` reloads a trained
+  checkpoint straight into the serving model.
 - Serving: `serve.http_app.RerankApp` exposes drop-in `POST /rerank` and
   `GET /healthz` with pure, testable routing over stdlib `http.server`.
 

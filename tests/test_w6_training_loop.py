@@ -8,7 +8,10 @@ from pathlib import Path
 
 from explainable_reranker.data.sentence_index import IndexedSentence, build_sentence_index
 from explainable_reranker.distill.dataset import build_training_batch
-from explainable_reranker.distill.neural_training import _annealed_gate_probabilities
+from explainable_reranker.distill.neural_training import (
+    _annealed_gate_probabilities,
+    warmup_packing_ids,
+)
 from explainable_reranker.distill.trainer import TrainingSchedule
 from explainable_reranker.distill.training import (
     SelectionSample,
@@ -178,6 +181,29 @@ class AnnealedGateTemperatureTest(unittest.TestCase):
     def test_zero_temperature_does_not_divide_by_zero(self) -> None:
         prob = _annealed_gate_probabilities(_FakeTorch, _FakeTensor([0.0]), 0.0).values[0]
         self.assertAlmostEqual(prob, 0.5)
+
+
+class WarmupPackingTest(unittest.TestCase):
+    def test_full_input_packs_everything(self) -> None:
+        ids = ["a", "b", "c"]
+        self.assertEqual(
+            warmup_packing_ids(ids, use_full_input=True, keep_flags=[False, False, False]),
+            {"a", "b", "c"},
+        )
+
+    def test_random_partial_keeps_flagged_subset(self) -> None:
+        ids = ["a", "b", "c"]
+        self.assertEqual(
+            warmup_packing_ids(ids, use_full_input=False, keep_flags=[True, False, True]),
+            {"a", "c"},
+        )
+
+    def test_never_packs_empty_evidence(self) -> None:
+        ids = ["a", "b"]
+        self.assertEqual(
+            warmup_packing_ids(ids, use_full_input=False, keep_flags=[False, False]),
+            {"a"},
+        )
 
 
 if __name__ == "__main__":

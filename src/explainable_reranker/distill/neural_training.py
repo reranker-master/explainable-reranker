@@ -152,6 +152,23 @@ def _annealed_gate_probabilities(torch, generator_logits, temperature: float):
     return torch.sigmoid(generator_logits / safe_temperature)
 
 
+def warmup_packing_ids(
+    sentence_ids: list[str], *, use_full_input: bool, keep_flags: list[bool]
+) -> set[str]:
+    """plan §2.4-1 warm-up packing: full input (z≡1) or a random partial subset.
+
+    Adapting the Predictor to both extremes — everything packed, and an arbitrary
+    subset — is what makes it robust to whatever the Generator selects later
+    (§2.9-2 flags this as make-or-break). Never returns an empty pack (the
+    Predictor must always see at least one sentence).
+    """
+
+    if use_full_input or not sentence_ids:
+        return set(sentence_ids)
+    kept = {sid for sid, keep in zip(sentence_ids, keep_flags, strict=True) if keep}
+    return kept or {sentence_ids[0]}
+
+
 def _selected_ids_for_packing(
     torch,
     candidate: CandidateTrainingExample,
@@ -163,10 +180,20 @@ def _selected_ids_for_packing(
 ) -> set[str]:
     """Pick which sentence IDs feed the Predictor for this candidate.
 
-    With probability ``teacher_mask_ratio`` use the teacher's citations
-    (teacher-forcing the predictor early); otherwise use the generator's own
-    hard selection (detached — packing is non-differentiable by design).
+    During warm-up (``schedule.is_warmup``) the Predictor is adapted to full input
+    (z≡1) and random partial selection so it tolerates any later selection. After
+    warm-up, with probability ``teacher_mask_ratio`` use the teacher's citations
+    (teacher-forcing early); otherwise use the generator's own hard selection
+    (detached — packing is non-differentiable by design).
     """
+
+    sentence_ids = [label.sentence.sentence_id for label in candidate.sentences]
+    if schedule.is_warmup:
+        use_full_input = float(torch.rand((), generator=rng)) < 0.5
+        keep_flags = [float(torch.rand((), generator=rng)) < 0.5 for _ in sentence_ids]
+        return warmup_packing_ids(
+            sentence_ids, use_full_input=use_full_input, keep_flags=keep_flags
+        )
 
     use_teacher = float(torch.rand((), generator=rng)) < schedule.teacher_mask_ratio
     if use_teacher:
