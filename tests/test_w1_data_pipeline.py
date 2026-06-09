@@ -47,6 +47,13 @@ class DataPipelineTest(unittest.TestCase):
             loaded = store.load("topa.page.v1", "resp_demo_001")
             self.assertEqual(loaded.query_id, "q_demo_001")
 
+            # plan §2.7.1/§3: per-sentence text_hash is persisted in the snapshot and
+            # matches what build_sentence_index derives from the same payload.
+            persisted = store.load_sentence_hashes("topa.page.v1", "resp_demo_001")
+            expected = {s.sentence_id: s.text_hash for s in build_sentence_index(loaded)}
+            self.assertTrue(persisted)
+            self.assertEqual(persisted, expected)
+
     def test_generate_synthetic_queries_balances_families(self) -> None:
         queries = generate_synthetic_queries(25, seed=11)
         self.assertEqual(len(queries), 25)

@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from explainable_reranker.data.sentence_index import build_sentence_index
 from explainable_reranker.topa.adapter import TopaPageResponse, parse_topa_page_response
 
 
@@ -44,6 +45,13 @@ class SnapshotStore:
     ) -> SnapshotRecord:
         response = parse_topa_page_response(payload)
         payload_hash = canonical_json_sha256(payload)
+        # plan §2.7.1/§3: persist the per-sentence text_hash alongside the raw payload
+        # so reproducibility is anchored on the exact evidence text the labels cite,
+        # not just the whole-blob hash. sentence_index assigns IDs/offsets only.
+        sentence_hashes = {
+            sentence.sentence_id: sentence.text_hash
+            for sentence in build_sentence_index(response)
+        }
         timestamp = request_timestamp or datetime.now(UTC).isoformat()
         snapshot_dir = self.root / response.schema_version
         snapshot_dir.mkdir(parents=True, exist_ok=True)
@@ -60,6 +68,7 @@ class SnapshotStore:
                 "request_timestamp": timestamp,
                 "payload_sha256": payload_hash,
             },
+            "sentence_hashes": sentence_hashes,
             "payload": payload,
         }
 
@@ -98,6 +107,16 @@ class SnapshotStore:
         envelope = json.loads(snapshot_path.read_text(encoding="utf-8"))
         metadata = envelope["metadata"]
         return SnapshotRecord(path=str(snapshot_path), **metadata)
+
+    def load_sentence_hashes(self, schema_version: str, response_id: str) -> dict[str, str]:
+        """Return the persisted ``{sentence_id: text_hash}`` map for a snapshot.
+
+        Empty for snapshots written before sentence-hash persistence (back-compat).
+        """
+
+        snapshot_path = self.root / schema_version / f"{response_id}.json"
+        envelope = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        return envelope.get("sentence_hashes", {})
 
     def write_manifest(self, records: list[SnapshotRecord], name: str = "manifest.jsonl") -> Path:
         manifest_path = self.root / name
