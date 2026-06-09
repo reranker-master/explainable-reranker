@@ -31,6 +31,7 @@ from explainable_reranker.teacher.grounded_teacher import (
     LLMGroundedTeacher,
     TeacherLabelingError,
 )
+from explainable_reranker.teacher.agreement import self_consistency_report
 from explainable_reranker.teacher.hard_negatives import (
     StaticHardNegativeSource,
     inject_hard_negatives,
@@ -86,6 +87,13 @@ def main() -> int:
     parser.add_argument("--model-id", default=None, help="override the Opus model id")
     parser.add_argument("--dummy", action="store_true", help="offline scripted teacher (no API)")
     parser.add_argument(
+        "--self-consistency",
+        type=int,
+        default=0,
+        help="relabel N>=2 times with shuffled order and report the §1.4 κ/NDCG/IoU gate "
+        "(0 = off; saves the first run's label)",
+    )
+    parser.add_argument(
         "--hard-negatives",
         type=Path,
         default=None,
@@ -116,7 +124,7 @@ def main() -> int:
         StaticHardNegativeSource.from_file(args.hard_negatives) if args.hard_negatives else None
     )
 
-    labeled, failed = 0, 0
+    labeled, failed, inconsistent = 0, 0, 0
     for i, query in enumerate(queries, start=1):
         print(f"[{i}/{len(queries)}] {query}")
         transform = None
@@ -142,7 +150,23 @@ def main() -> int:
             chat_model = AnthropicClaudeChatModel(model_id=args.model_id)
         teacher = LLMGroundedTeacher(chat_model, teacher_config)
         try:
-            label = teacher.label(response, sentence_index)
+            if args.self_consistency >= 2:
+                # plan §1.4: relabel with shuffled candidate order and gate on the
+                # κ / NDCG@10 / rationale-IoU agreement before trusting the label.
+                labels = teacher.label_with_self_consistency(
+                    response, sentence_index, runs=args.self_consistency, seed=i
+                )
+                report = self_consistency_report(labels)
+                status = "PASS" if report.passed else "FAIL"
+                print(
+                    f"    self-consistency: κ={report.weighted_kappa:.3f} "
+                    f"ndcg@10={report.ndcg_at_10:.3f} iou={report.rationale_iou:.3f} [{status}]"
+                )
+                if not report.passed:
+                    inconsistent += 1
+                label = labels[0]
+            else:
+                label = teacher.label(response, sentence_index)
         except TeacherLabelingError as exc:
             failed += 1
             print(f"    teacher failed: {exc}")
@@ -155,7 +179,13 @@ def main() -> int:
         labeled += 1
         print(f"    labeled → {label_path}")
 
-    print(f"\ndone: {labeled} labeled, {failed} failed; snapshots under {snapshots_root}")
+    consistency_note = (
+        f", {inconsistent} below self-consistency gate" if args.self_consistency >= 2 else ""
+    )
+    print(
+        f"\ndone: {labeled} labeled, {failed} failed{consistency_note}; "
+        f"snapshots under {snapshots_root}"
+    )
     print(f"next: PYTHONPATH=src python3 scripts/train_neural.py "
           f"--snapshots {snapshots_root} --labels {labels_dir} --out checkpoints/neural-v1")
     return 0 if labeled else 1
