@@ -24,6 +24,11 @@ class TopaBookCandidate:
     score: float | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     evidence: tuple[EvidenceItem, ...] = ()
+    # Set when this candidate was mined as a hard negative and mixed into the pool
+    # (teacher.hard_negatives). Persisted in the snapshot so the §2 anchor loss can
+    # recover a hard label of 0 at train time without re-querying Memgraph.
+    is_hard_negative: bool = False
+    hard_negative_reason: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -90,6 +95,10 @@ def parse_topa_page_response(payload: dict[str, Any]) -> TopaPageResponse:
             raw_candidate, "rank", default=_first_int(raw_candidate, "pre_rerank_rank", default=idx + 1)
         )
         evidence = tuple(_parse_evidence(raw_candidate))
+        is_hard_negative = bool(raw_candidate.get("hard_negative") or book_obj.get("hard_negative"))
+        hard_negative_reason = (
+            _first_text(raw_candidate, "hard_negative_reason") if is_hard_negative else ""
+        ) or None
         candidates.append(
             TopaBookCandidate(
                 book_id=book_id,
@@ -98,6 +107,8 @@ def parse_topa_page_response(payload: dict[str, Any]) -> TopaPageResponse:
                 score=score,
                 metadata=_metadata_without(raw_candidate, {"evidence", "sentences", "chunks", "reviews"}),
                 evidence=evidence,
+                is_hard_negative=is_hard_negative,
+                hard_negative_reason=hard_negative_reason,
                 raw=raw_candidate,
             )
         )

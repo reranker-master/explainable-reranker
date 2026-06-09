@@ -31,6 +31,10 @@ from explainable_reranker.teacher.grounded_teacher import (
     LLMGroundedTeacher,
     TeacherLabelingError,
 )
+from explainable_reranker.teacher.hard_negatives import (
+    StaticHardNegativeSource,
+    inject_hard_negatives,
+)
 from explainable_reranker.teacher.llm_client import AnthropicClaudeChatModel, ScriptedChatModel
 from explainable_reranker.topa.client import HttpTopaPageClient, collect_snapshot
 
@@ -81,6 +85,19 @@ def main() -> int:
     parser.add_argument("--top-k-rationale", type=int, default=10)
     parser.add_argument("--model-id", default=None, help="override the Opus model id")
     parser.add_argument("--dummy", action="store_true", help="offline scripted teacher (no API)")
+    parser.add_argument(
+        "--hard-negatives",
+        type=Path,
+        default=None,
+        help='mine hard negatives from a JSON file ({query: [neg,...]} or [neg,...]); '
+        "mixed into the candidate pool before labeling (plan §3/§5.1.3)",
+    )
+    parser.add_argument(
+        "--max-hard-negatives",
+        type=int,
+        default=None,
+        help="cap injected hard negatives per query (default: no cap)",
+    )
     args = parser.parse_args()
 
     queries = _load_queries(args)
@@ -95,13 +112,27 @@ def main() -> int:
     teacher_config = GroundedTeacherConfig(
         top_k_rationale=args.top_k_rationale, max_sentences_per_book=args.max_sentences
     )
+    hard_negative_source = (
+        StaticHardNegativeSource.from_file(args.hard_negatives) if args.hard_negatives else None
+    )
 
     labeled, failed = 0, 0
     for i, query in enumerate(queries, start=1):
         print(f"[{i}/{len(queries)}] {query}")
-        record, response = collect_snapshot(client, store, query, top_k=args.top_k)
+        transform = None
+        if hard_negative_source is not None:
+            def transform(payload, _query=query):
+                negatives = hard_negative_source.fetch(_query, payload)
+                return inject_hard_negatives(payload, negatives, max_negatives=args.max_hard_negatives)
+        record, response = collect_snapshot(
+            client, store, query, top_k=args.top_k, payload_transform=transform
+        )
         sentence_index = build_sentence_index(response)
-        print(f"    candidates={len(response.candidates)} sentences={len(sentence_index)}")
+        injected = sum(1 for c in response.candidates if c.is_hard_negative)
+        print(
+            f"    candidates={len(response.candidates)} (hard_neg={injected}) "
+            f"sentences={len(sentence_index)}"
+        )
 
         if args.dummy:
             chat_model = ScriptedChatModel(

@@ -39,6 +39,18 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
   reranked. `topa.adapter.parse_topa_page_response` handles the live schema
   (nested `book.isbn`/`book.title`, `retrieval_debug.rrf_score`, and the
   `chunks` dict `{synopsis, review}`) as well as the flat compat schema.
+- Hard-negative mining: `teacher.hard_negatives.HardNegativeSource` protocol with
+  `StaticHardNegativeSource` (dummy/`--hard-negatives <json>`) and
+  `MemgraphHardNegativeSource` (production skeleton; injectable cypher executor for
+  the plan §3 strategies — same-genre/opposite-mood and 제목정규화 변형). Plan §5.1.3
+  distractors are mixed into the pool via `collect_snapshot(payload_transform=
+  inject_hard_negatives)` (between fetch and save, so the snapshot = the pool the
+  teacher saw), marked on `TopaBookCandidate.is_hard_negative`, and recovered at
+  train time by `train_neural` via `hard_label_map` → `build_training_batch(...,
+  hard_labels=...)` so the `_hard_anchor` loss actually fires. The teacher prompt is
+  distractor-aware (score plausible-but-wrong books low) but is NOT told which
+  candidates are injected, keeping its soft scores honest alongside the known
+  hard_label=0 anchor.
 - Neural model: `models.select_predict.backends` defines the Generator/Predictor
   backend protocols (lexical stand-ins satisfy them) plus `HFSentenceGenerator`/
   `HFPackedEvidencePredictor` (bge + LoRA, lazy torch/transformers/peft) and

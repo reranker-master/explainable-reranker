@@ -33,6 +33,7 @@ from explainable_reranker.models.select_predict.backends import (
     HFSentenceGenerator,
     load_lora_config,
 )
+from explainable_reranker.teacher.hard_negatives import hard_label_map
 from explainable_reranker.teacher.schemas import parse_teacher_label
 from explainable_reranker.topa.adapter import parse_topa_page_response
 
@@ -58,7 +59,12 @@ def load_batches(snapshots_dir: Path, labels_dir: Path) -> list[QueryTrainingBat
             query_id=response.query_id,
             response_id=response.response_id,
         )
-        batches.append(build_training_batch(response, sentence_index, teacher_label))
+        # Injected hard negatives carry a known hard label of 0, recovered from the
+        # snapshot marker so the §2 anchor loss (_hard_anchor) actually fires.
+        hard_labels = hard_label_map(response) or None
+        batches.append(
+            build_training_batch(response, sentence_index, teacher_label, hard_labels=hard_labels)
+        )
     if skipped:
         print(f"warning: {skipped} snapshot(s) had no matching teacher label and were skipped")
     return batches

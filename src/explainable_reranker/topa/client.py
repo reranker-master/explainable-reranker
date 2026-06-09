@@ -123,15 +123,23 @@ def collect_snapshot(
     top_k: int | None = None,
     params: dict[str, Any] | None = None,
     request_timestamp: str | None = None,
+    payload_transform: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
 ) -> tuple[SnapshotRecord, TopaPageResponse]:
     """Fetch a topa.page payload, persist it as an immutable raw snapshot, parse it.
 
-    This is the §9 data-entry seam: request → store raw snapshot (with hash and
-    version) → normalized response. The raw payload is never mutated before it is
-    saved, preserving reproducibility.
+    This is the §9 data-entry seam: request → (optional transform) → store raw
+    snapshot (with hash and version) → normalized response.
+
+    ``payload_transform`` runs once between fetch and save — its sole sanctioned
+    use is mixing mined hard negatives into the candidate pool
+    (``teacher.hard_negatives.inject_hard_negatives``) so the snapshot that drives
+    training is the exact pool the teacher saw. The transform is applied before the
+    snapshot hash, so the augmented pool is what reproducibility is anchored on.
     """
 
     payload = client.fetch_page(query, top_k=top_k, params=params)
+    if payload_transform is not None:
+        payload = payload_transform(payload)
     record = store.save(payload, request_timestamp=request_timestamp)
     response = parse_topa_page_response(payload)
     return record, response

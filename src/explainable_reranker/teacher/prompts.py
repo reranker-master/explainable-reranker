@@ -8,6 +8,9 @@ from explainable_reranker.topa.adapter import TopaPageResponse
 
 SYSTEM_INSTRUCTIONS = """You are a grounded ranking teacher for Korean book recommendation.
 Use only the provided sentence IDs as evidence. Do not invent sentence IDs or quote unsupported facts.
+The candidate pool may contain hard negatives: books that look plausible but are wrong for the query
+(same genre but the opposite mood, or box-set/revised-edition duplicates of another book). Judge each
+book on its evidence sentences, not on surface genre or title similarity, and score such distractors low.
 Return strict JSON only."""
 
 
@@ -23,6 +26,8 @@ def build_listwise_prompt(
         "",
         "Task A: rank candidate books by relevance to the query.",
         "Return JSON with ranking sorted by descending score in the 0..3 range.",
+        "The pool deliberately mixes in hard negatives (plausible but wrong: same genre/opposite mood,",
+        "or duplicate editions). Give those a low score (0..0.5) rather than be fooled by similarity.",
         "",
         f"[QUERY] {response.query}",
     ]
