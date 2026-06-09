@@ -136,6 +136,22 @@ class NeuralTrainHistory:
 # ---------------------------------------------------------------------------
 
 
+def _annealed_gate_probabilities(torch, generator_logits, temperature: float):
+    """Sigmoid gate probabilities with the schedule's HardConcrete temperature.
+
+    plan §2.4-2: anneal the gate temperature high→low so selection sharpens over
+    training (soft, exploratory early; near-discrete late). ``TrainingSchedule``
+    supplies ``hard_concrete_temperature`` (1.5 → 0.5); dividing the logits by it
+    flattens probs toward 0.5 when high and pushes them toward 0/1 when low. The
+    hard selection in ``_selected_ids_for_packing`` thresholds the raw logit at 0,
+    so temperature only shapes the *soft* probs used by the select/sparsity/
+    continuity losses — exactly the term the schedule was meant to drive.
+    """
+
+    safe_temperature = max(float(temperature), 1e-6)
+    return torch.sigmoid(generator_logits / safe_temperature)
+
+
 def _selected_ids_for_packing(
     torch,
     candidate: CandidateTrainingExample,
@@ -214,7 +230,9 @@ def train_joint(
             for candidate in batch.candidates:
                 sentences = tuple(label.sentence for label in candidate.sentences)
                 gen_logits = generator._forward_logits(batch.query, sentences)
-                gate_probs = torch.sigmoid(gen_logits)
+                gate_probs = _annealed_gate_probabilities(
+                    torch, gen_logits, schedule.hard_concrete_temperature
+                )
                 gate_prob_chunks.append(gate_probs)
                 gate_target_chunks.append(
                     gate_probs.new_tensor([float(label.selected) for label in candidate.sentences])

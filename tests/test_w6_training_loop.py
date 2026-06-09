@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import math
 import tempfile
 import unittest
 from pathlib import Path
 
 from explainable_reranker.data.sentence_index import IndexedSentence, build_sentence_index
 from explainable_reranker.distill.dataset import build_training_batch
+from explainable_reranker.distill.neural_training import _annealed_gate_probabilities
 from explainable_reranker.distill.trainer import TrainingSchedule
 from explainable_reranker.distill.training import (
     SelectionSample,
@@ -142,6 +144,40 @@ class TrainingLoopTest(unittest.TestCase):
         late = TrainingSchedule.for_step(100, warmup_steps=10, total_steps=100)
         self.assertAlmostEqual(late.generator_mask_ratio, 1.0)
         self.assertLess(late.hard_concrete_temperature, warm.hard_concrete_temperature)
+
+
+class _FakeTensor:
+    """Minimal tensor stub so the gate math is testable without torch (GPU-only)."""
+
+    def __init__(self, values: list[float]) -> None:
+        self.values = list(values)
+
+    def __truediv__(self, scalar: float) -> "_FakeTensor":
+        return _FakeTensor([value / scalar for value in self.values])
+
+
+class _FakeTorch:
+    @staticmethod
+    def sigmoid(tensor: _FakeTensor) -> _FakeTensor:
+        return _FakeTensor([1.0 / (1.0 + math.exp(-value)) for value in tensor.values])
+
+
+class AnnealedGateTemperatureTest(unittest.TestCase):
+    def test_temperature_is_applied_and_sharpens_when_low(self) -> None:
+        logits = _FakeTensor([2.0])
+        warm = _annealed_gate_probabilities(_FakeTorch, logits, 1.5).values[0]
+        late = _annealed_gate_probabilities(_FakeTorch, logits, 0.5).values[0]
+
+        # Temperature must actually divide the logit (not be ignored): T=1.5 differs
+        # from a plain sigmoid, and a lower T pushes a positive logit's prob higher.
+        self.assertAlmostEqual(warm, 1.0 / (1.0 + math.exp(-2.0 / 1.5)))
+        self.assertAlmostEqual(late, 1.0 / (1.0 + math.exp(-2.0 / 0.5)))
+        self.assertNotAlmostEqual(warm, 1.0 / (1.0 + math.exp(-2.0)))
+        self.assertGreater(late, warm)  # low temperature => sharper (closer to 1.0)
+
+    def test_zero_temperature_does_not_divide_by_zero(self) -> None:
+        prob = _annealed_gate_probabilities(_FakeTorch, _FakeTensor([0.0]), 0.0).values[0]
+        self.assertAlmostEqual(prob, 0.5)
 
 
 if __name__ == "__main__":
