@@ -24,6 +24,10 @@ import argparse
 import json
 from pathlib import Path
 
+from explainable_reranker.data.evidence_fallback import (
+    StaticEvidenceFallback,
+    augment_with_fallback,
+)
 from explainable_reranker.data.sentence_index import build_sentence_index
 from explainable_reranker.data.snapshot_store import SnapshotStore
 from explainable_reranker.teacher.grounded_teacher import (
@@ -106,6 +110,19 @@ def main() -> int:
         default=None,
         help="cap injected hard negatives per query (default: no cap)",
     )
+    parser.add_argument(
+        "--evidence-fallback",
+        type=Path,
+        default=None,
+        help="JSON {book_id: [sentence,...]} to backfill candidates with too few "
+        "topa sentences (plan §1.5 book_chunks/Qdrant fallback)",
+    )
+    parser.add_argument(
+        "--min-evidence",
+        type=int,
+        default=0,
+        help="min sentences per book before the evidence fallback is queried (0 = off)",
+    )
     args = parser.parse_args()
 
     queries = _load_queries(args)
@@ -123,15 +140,28 @@ def main() -> int:
     hard_negative_source = (
         StaticHardNegativeSource.from_file(args.hard_negatives) if args.hard_negatives else None
     )
+    evidence_fallback_source = (
+        StaticEvidenceFallback.from_file(args.evidence_fallback) if args.evidence_fallback else None
+    )
 
     labeled, failed, inconsistent = 0, 0, 0
     for i, query in enumerate(queries, start=1):
         print(f"[{i}/{len(queries)}] {query}")
         transform = None
-        if hard_negative_source is not None:
+        if hard_negative_source is not None or evidence_fallback_source is not None:
             def transform(payload, _query=query):
-                negatives = hard_negative_source.fetch(_query, payload)
-                return inject_hard_negatives(payload, negatives, max_negatives=args.max_hard_negatives)
+                # Mix hard negatives in first, then backfill thin candidates so the
+                # fallback also reaches injected negatives that lack evidence.
+                if hard_negative_source is not None:
+                    negatives = hard_negative_source.fetch(_query, payload)
+                    payload = inject_hard_negatives(
+                        payload, negatives, max_negatives=args.max_hard_negatives
+                    )
+                if evidence_fallback_source is not None:
+                    payload = augment_with_fallback(
+                        payload, evidence_fallback_source, min_sentences=args.min_evidence
+                    )
+                return payload
         record, response = collect_snapshot(
             client, store, query, top_k=args.top_k, payload_transform=transform
         )
