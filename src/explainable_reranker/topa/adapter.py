@@ -64,10 +64,31 @@ def parse_topa_page_response(payload: dict[str, Any]) -> TopaPageResponse:
     for idx, raw_candidate in enumerate(raw_candidates):
         if not isinstance(raw_candidate, dict):
             raise ValueError(f"candidate at index {idx} is not an object")
-        book_id = _first_text(raw_candidate, "book_id", "id", "isbn", default=f"book_{idx + 1:04d}")
-        title = _first_text(raw_candidate, "title", "name", default=book_id)
+        # The live /api/search/search-candidates schema nests the book fields under
+        # `book` and the retrieval scores under `retrieval_debug`; older/compat
+        # payloads keep them flat. Accept both.
+        book_obj = raw_candidate.get("book") if isinstance(raw_candidate.get("book"), dict) else {}
+        debug_obj = (
+            raw_candidate.get("retrieval_debug")
+            if isinstance(raw_candidate.get("retrieval_debug"), dict)
+            else {}
+        )
+        book_id = (
+            _first_text(raw_candidate, "book_id", "id", "isbn")
+            or _first_text(book_obj, "isbn", "id", "book_id")
+            or f"book_{idx + 1:04d}"
+        )
+        title = (
+            _first_text(raw_candidate, "title", "name")
+            or _first_text(book_obj, "title", "name")
+            or book_id
+        )
         score = _first_number(raw_candidate, "score", "retrieval_score", "rrf_score")
-        rank = _first_int(raw_candidate, "rank", default=idx + 1)
+        if score is None:
+            score = _first_number(debug_obj, "rrf_score", "score")
+        rank = _first_int(
+            raw_candidate, "rank", default=_first_int(raw_candidate, "pre_rerank_rank", default=idx + 1)
+        )
         evidence = tuple(_parse_evidence(raw_candidate))
         candidates.append(
             TopaBookCandidate(
@@ -96,8 +117,30 @@ def parse_topa_page_response(payload: dict[str, Any]) -> TopaPageResponse:
 
 
 def _parse_evidence(raw_candidate: dict[str, Any]) -> list[EvidenceItem]:
-    raw_evidence = _first_list(raw_candidate, "evidence", "evidence_sentences", "sentences", "chunks")
     evidence: list[EvidenceItem] = []
+
+    # Live schema: `chunks` is a mapping {source_type: text}, e.g. {synopsis, review}.
+    # These are paragraph-level; sentence splitting/ID/offset assignment happens in
+    # data.sentence_index (split_if_needed handles the long-text exception path).
+    chunks = raw_candidate.get("chunks")
+    if isinstance(chunks, dict):
+        for source_type, value in chunks.items():
+            if isinstance(value, str):
+                text, raw = value.strip(), {"source_type": source_type, "text": value}
+            elif isinstance(value, dict):
+                text = _first_text(value, "text", "sentence", "content", "body").strip()
+                raw = value
+            else:
+                continue
+            if text:
+                evidence.append(
+                    EvidenceItem(
+                        source_type=str(source_type), source_id=str(source_type), text=text, raw=raw
+                    )
+                )
+
+    # Compat schema: list-based evidence/sentences/chunks.
+    raw_evidence = _first_list(raw_candidate, "evidence", "evidence_sentences", "sentences", "chunks")
 
     for idx, item in enumerate(raw_evidence):
         if isinstance(item, str):

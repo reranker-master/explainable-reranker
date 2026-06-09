@@ -116,6 +116,60 @@ class BedrockClaudeChatModel:
         return self._extract_text(json.loads(payload))
 
 
+class AnthropicClaudeChatModel:
+    """Production teacher backed by the first-party Anthropic API (Opus 4.8).
+
+    This is the "best case" label generator: it calls Claude Opus 4.8 directly
+    via the official SDK. The SDK and credentials (``ANTHROPIC_API_KEY``) are
+    resolved lazily on first call so importing the package stays dependency-free.
+
+    Labeling emits a full listwise ranking plus grounded rationales, which can be
+    long, so we stream and pull the final message (timeout-safe per the SDK
+    guidance). Adaptive thinking is on — the teacher is doing real reasoning over
+    many candidates — and only the text blocks are returned for JSON extraction.
+    """
+
+    DEFAULT_MODEL_ID = "claude-opus-4-8"
+
+    def __init__(
+        self,
+        *,
+        model_id: str | None = None,
+        max_tokens: int = 32000,
+        effort: str = "high",
+        client: object | None = None,
+    ):
+        self.model_id = model_id or self.DEFAULT_MODEL_ID
+        self.max_tokens = max_tokens
+        self.effort = effort
+        self._client = client
+
+    def _anthropic_client(self) -> object:
+        if self._client is None:
+            try:
+                import anthropic  # lazy; only needed where labels are generated
+            except ImportError as exc:  # pragma: no cover - exercised only in prod
+                raise RuntimeError(
+                    "anthropic SDK is required for AnthropicClaudeChatModel; install the "
+                    "teacher extras: `pip install -e '.[teacher]'`."
+                ) from exc
+            self._client = anthropic.Anthropic()
+        return self._client
+
+    def generate(self, *, system: str, user: str) -> str:  # pragma: no cover - prod path
+        client = self._anthropic_client()
+        with client.messages.stream(
+            model=self.model_id,
+            max_tokens=self.max_tokens,
+            thinking={"type": "adaptive"},
+            output_config={"effort": self.effort},
+            system=system,
+            messages=[{"role": "user", "content": user}],
+        ) as stream:
+            message = stream.get_final_message()
+        return "".join(block.text for block in message.content if block.type == "text")
+
+
 def extract_json_object(text: str) -> dict:
     """Parse the first top-level JSON object out of an LLM response.
 

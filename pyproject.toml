@@ -20,6 +20,10 @@ gpu = [
     "accelerate>=0.33",
     "safetensors>=0.4",
 ]
+# Opus teacher label generation via the first-party Anthropic API.
+teacher = [
+    "anthropic>=0.69",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

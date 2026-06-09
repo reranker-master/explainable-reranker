@@ -20,8 +20,15 @@ class TopaPageClient(Protocol):
     :class:`DummyTopaPageClient` while production uses :class:`HttpTopaPageClient`.
     """
 
-    def fetch_page(self, query: str, *, top_k: int = 60, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Return the raw topa.page JSON payload for a query."""
+    def fetch_page(
+        self, query: str, *, top_k: int | None = None, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Return the raw topa.page JSON payload for a query.
+
+        ``top_k`` is optional: the live /api/search/search-candidates endpoint
+        returns the full candidate set regardless, and we want to rerank as many
+        candidates as possible, so by default no ``top_k`` is sent.
+        """
 
 
 @dataclass
@@ -35,9 +42,11 @@ class DummyTopaPageClient:
 
     payloads: dict[str, dict[str, Any]] = field(default_factory=dict)
     default: dict[str, Any] | None = None
-    calls: list[tuple[str, int, dict[str, Any]]] = field(default_factory=list)
+    calls: list[tuple[str, int | None, dict[str, Any]]] = field(default_factory=list)
 
-    def fetch_page(self, query: str, *, top_k: int = 60, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def fetch_page(
+        self, query: str, *, top_k: int | None = None, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         self.calls.append((query, top_k, dict(params or {})))
         if query in self.payloads:
             return self.payloads[query]
@@ -57,22 +66,35 @@ class HttpTopaPageClient:
 
     def __init__(
         self,
-        base_url: str,
+        base_url: str = "https://www.topa.page",
         *,
-        path: str = "/page",
+        path: str = "/api/search/search-candidates",
         auth_token: str | None = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
+        user_agent: str = "Mozilla/5.0 (explainable-reranker)",
         opener: Callable[..., Any] | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.path = path if path.startswith("/") else f"/{path}"
         self.auth_token = auth_token
         self.timeout = timeout
+        self.user_agent = user_agent
         self._opener = opener or urllib.request.urlopen
 
-    def _build_request(self, query: str, top_k: int, params: dict[str, Any] | None) -> urllib.request.Request:
-        body = {"query": query, "top_k": top_k, **(params or {})}
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    def _build_request(
+        self, query: str, top_k: int | None, params: dict[str, Any] | None
+    ) -> urllib.request.Request:
+        body: dict[str, Any] = {"query": query}
+        if top_k is not None:  # omitted by default — fetch the full candidate set
+            body["top_k"] = top_k
+        body.update(params or {})
+        headers = {
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+            # The endpoint sits behind Cloudflare, which 403s the default
+            # `Python-urllib` UA; present a normal browser UA.
+            "User-Agent": self.user_agent,
+        }
         if self.auth_token:
             headers["Authorization"] = f"Bearer {self.auth_token}"
         return urllib.request.Request(
@@ -82,7 +104,9 @@ class HttpTopaPageClient:
             method="POST",
         )
 
-    def fetch_page(self, query: str, *, top_k: int = 60, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def fetch_page(
+        self, query: str, *, top_k: int | None = None, params: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         request = self._build_request(query, top_k, params)
         with self._opener(request, timeout=self.timeout) as response:
             raw = response.read()
@@ -96,7 +120,7 @@ def collect_snapshot(
     store: SnapshotStore,
     query: str,
     *,
-    top_k: int = 60,
+    top_k: int | None = None,
     params: dict[str, Any] | None = None,
     request_timestamp: str | None = None,
 ) -> tuple[SnapshotRecord, TopaPageResponse]:

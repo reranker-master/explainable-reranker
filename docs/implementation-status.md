@@ -25,12 +25,20 @@ Every external/GPU dependency now sits behind a protocol with an offline dummy
 and a production skeleton, so the whole pipeline runs and is tested locally:
 
 - Teacher LLM: `teacher.llm_client.ChatModel` protocol with `ScriptedChatModel`
-  (dummy) and `BedrockClaudeChatModel` (Opus 4.8, lazy `boto3`).
+  (dummy), `AnthropicClaudeChatModel` (first-party Opus 4.8 via the `anthropic`
+  SDK — streaming + adaptive thinking; reads `ANTHROPIC_API_KEY`), and
+  `BedrockClaudeChatModel` (Opus 4.8, lazy `boto3`).
   `teacher.grounded_teacher.LLMGroundedTeacher` orchestrates the 2-pass labeling,
   validation, retries, and self-consistency.
 - topa.page retrieval: `topa.client.TopaPageClient` protocol with
   `DummyTopaPageClient` and `HttpTopaPageClient` (stdlib `urllib`, injectable
   opener); `collect_snapshot` ties fetch → immutable raw snapshot → parse.
+  `HttpTopaPageClient` defaults to the live `https://www.topa.page/api/search/
+  search-candidates` endpoint, sends a browser UA (the endpoint is behind
+  Cloudflare), and omits `top_k` by default so the full candidate set is
+  reranked. `topa.adapter.parse_topa_page_response` handles the live schema
+  (nested `book.isbn`/`book.title`, `retrieval_debug.rrf_score`, and the
+  `chunks` dict `{synopsis, review}`) as well as the flat compat schema.
 - Neural model: `models.select_predict.backends` defines the Generator/Predictor
   backend protocols (lexical stand-ins satisfy them) plus `HFSentenceGenerator`/
   `HFPackedEvidencePredictor` (bge + LoRA, lazy torch/transformers/peft) and
@@ -71,6 +79,23 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
 PYTHONPATH=src python3 -m unittest discover -s tests
 PYTHONPATH=src python3 scripts/run_dummy_pipeline.py
 ```
+
+## End-to-end: collect → label → train
+
+```bash
+# 0. Collect topa candidates + generate Opus "best case" labels.
+#    --dummy runs the whole chain offline (no API cost); drop it + set
+#    ANTHROPIC_API_KEY to generate real Opus 4.8 labels.
+pip install -e '.[teacher]'
+PYTHONPATH=src ANTHROPIC_API_KEY=... python3 scripts/collect_and_label.py \
+    --queries data/queries.txt --out data --max-sentences 16
+# → data/snapshots/<schema>/<response_id>.json  and  data/labels/<response_id>.json
+```
+
+The live `/api/search/search-candidates` endpoint returns the full candidate set
+(no `top_k`), and the whole candidate list is reranked. The collect step was
+verified end-to-end against the live endpoint (134 candidates → snapshot → label
+→ training batch with gold rationale rows).
 
 ## GPU training on GB10 / DGX Spark
 
