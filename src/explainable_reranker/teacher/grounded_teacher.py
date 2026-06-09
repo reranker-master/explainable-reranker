@@ -38,7 +38,9 @@ class LLMGroundedTeacher:
     hallucinated IDs raise instead of silently entering the label set.
 
     The ChatModel seam keeps this fully testable offline: inject
-    ``ScriptedChatModel`` for tests and ``BedrockClaudeChatModel`` in production.
+    ``ScriptedChatModel`` for tests and a real client in production —
+    ``AnthropicClaudeChatModel`` by default (see ``scripts/collect_and_label.py``),
+    or ``BedrockClaudeChatModel`` where Bedrock is used instead.
     """
 
     def __init__(self, chat_model: ChatModel, config: GroundedTeacherConfig | None = None):

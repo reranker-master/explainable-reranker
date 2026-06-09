@@ -12,8 +12,10 @@ class ChatModel(Protocol):
 
     This is the single seam where the pipeline touches a real LLM provider. The
     rest of the teacher stack only depends on this protocol, so offline tests can
-    inject :class:`ScriptedChatModel` while production injects
-    :class:`BedrockClaudeChatModel`.
+    inject :class:`ScriptedChatModel` while production injects a real client —
+    :class:`AnthropicClaudeChatModel` (first-party Opus, the default used by
+    ``scripts/collect_and_label.py``) or :class:`BedrockClaudeChatModel` for
+    environments with Bedrock access instead.
     """
 
     def generate(self, *, system: str, user: str) -> str:
@@ -24,7 +26,7 @@ class ChatModel(Protocol):
 class ScriptedChatModel:
     """Deterministic dummy chat model used in tests and offline smoke runs.
 
-    It stands in for the Bedrock Claude call by replaying queued responses. The
+    It stands in for the real Claude call by replaying queued responses. The
     `responses` argument may be:
 
     - a single ``str`` returned for every call,
