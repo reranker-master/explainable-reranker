@@ -8,7 +8,14 @@ from explainable_reranker.data.sentence_index import build_sentence_index
 from explainable_reranker.distill.dataset import build_training_batch
 from explainable_reranker.eval.faithfulness import set_f1, set_iou
 from explainable_reranker.eval.ir_metrics import ndcg_at_k, recall_at_k
-from explainable_reranker.eval.run_eval import PredictionItem, QueryQrels, evaluate_predictions
+from explainable_reranker.eval.run_eval import (
+    PredictionItem,
+    QueryQrels,
+    evaluate_predictions,
+    load_predictions,
+    load_qrels,
+    report_to_dict,
+)
 from explainable_reranker.explain.reason_builder import build_reason
 from explainable_reranker.models.select_predict.model import SelectThenPredictModel
 from explainable_reranker.teacher.label_ranking import HeuristicRankingTeacher
@@ -80,6 +87,44 @@ class EvalReasonTest(unittest.TestCase):
         self.assertGreaterEqual(report.ndcg_at_10, 0.0)
         self.assertEqual(report.rationale_f1, 1.0)
         self.assertEqual(report.rationale_iou, 1.0)
+
+
+class EvalDriverIOTest(unittest.TestCase):
+    """Covers the file loaders that the scripts/evaluate.py CLI is built on."""
+
+    def test_loaders_round_trip_into_evaluate_predictions(self) -> None:
+        import tempfile
+
+        qrels_spec = {
+            "q1": {
+                "relevance_by_book": {"A": 3.0, "B": 0.0},
+                "rationale_ids_by_book": {"A": ["s1", "s2"]},
+            }
+        }
+        predictions_spec = {
+            "q1": [
+                {"book_id": "A", "score": 2.5, "rationale_sentence_ids": ["s1", "s2"]},
+                {"book_id": "B", "score": 0.1, "rationale_sentence_ids": []},
+            ]
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            qrels_path = Path(tmp) / "qrels.json"
+            predictions_path = Path(tmp) / "predictions.json"
+            qrels_path.write_text(json.dumps(qrels_spec), encoding="utf-8")
+            predictions_path.write_text(json.dumps(predictions_spec), encoding="utf-8")
+
+            qrels = load_qrels(qrels_path)
+            predictions = load_predictions(predictions_path)
+
+        self.assertEqual(qrels["q1"].rationale_ids_by_book["A"], {"s1", "s2"})
+        self.assertEqual(predictions["q1"][0].book_id, "A")
+
+        report = evaluate_predictions(qrels, predictions)
+        as_dict = report_to_dict(report)
+        self.assertIn("ndcg_at_10", as_dict)
+        # A (relevant, ranked first by score) → perfect ranking and exact rationale match.
+        self.assertEqual(as_dict["ndcg_at_10"], 1.0)
+        self.assertEqual(as_dict["rationale_f1"], 1.0)
 
 
 if __name__ == "__main__":

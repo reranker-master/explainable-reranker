@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+from dataclasses import asdict, dataclass
+from pathlib import Path
 
 from explainable_reranker.eval.faithfulness import set_f1, set_iou
 from explainable_reranker.eval.ir_metrics import mean_reciprocal_rank, ndcg_at_k, recall_at_k
@@ -73,6 +75,50 @@ def evaluate_predictions(
         rationale_f1=_mean(rationale_f1s),
         rationale_iou=_mean(rationale_ious),
     )
+
+
+def load_qrels(path: str | Path) -> dict[str, QueryQrels]:
+    """Load gold qrels: ``{query_id: {relevance_by_book, rationale_ids_by_book}}``.
+
+    Per plan §4 these must come from an *independent* eval set (not teacher labels);
+    this loader only reads them — keeping them independent is the caller's job.
+    """
+
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    qrels: dict[str, QueryQrels] = {}
+    for query_id, entry in raw.items():
+        relevance = {str(book): float(rel) for book, rel in entry.get("relevance_by_book", {}).items()}
+        rationale_ids = {
+            str(book): {str(sid) for sid in ids}
+            for book, ids in entry.get("rationale_ids_by_book", {}).items()
+        }
+        qrels[str(query_id)] = QueryQrels(
+            query_id=str(query_id),
+            relevance_by_book=relevance,
+            rationale_ids_by_book=rationale_ids,
+        )
+    return qrels
+
+
+def load_predictions(path: str | Path) -> dict[str, list[PredictionItem]]:
+    """Load model predictions: ``{query_id: [{book_id, score, rationale_sentence_ids}]}``."""
+
+    raw = json.loads(Path(path).read_text(encoding="utf-8"))
+    predictions: dict[str, list[PredictionItem]] = {}
+    for query_id, items in raw.items():
+        predictions[str(query_id)] = [
+            PredictionItem(
+                book_id=str(item["book_id"]),
+                score=float(item.get("score", 0.0)),
+                rationale_sentence_ids=tuple(str(sid) for sid in item.get("rationale_sentence_ids", [])),
+            )
+            for item in items
+        ]
+    return predictions
+
+
+def report_to_dict(report: EvaluationReport) -> dict[str, float]:
+    return asdict(report)
 
 
 def _mean(values: list[float]) -> float:
