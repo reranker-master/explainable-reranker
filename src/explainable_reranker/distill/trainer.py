@@ -35,7 +35,11 @@ def run_loss_only_step(
     *,
     tau: float = 1.0,
 ) -> DistillationLossBreakdown:
-    outputs = model.rerank_batch(batch)
+    # Score in batch.candidates order. model.rerank_batch sorts outputs by student
+    # score, but teacher_scores / gate_targets / hard_labels below are all in
+    # candidate order — using the sorted outputs would pair every loss term with the
+    # wrong candidate whenever the student reorders the batch (almost always).
+    outputs = [model.score_candidate(batch.query, candidate) for candidate in batch.candidates]
     student_scores = [output.score for output in outputs]
     gate_probabilities = [[gate.probability for gate in output.gates] for output in outputs]
     gate_targets = [[label.selected for label in candidate.sentences] for candidate in batch.candidates]

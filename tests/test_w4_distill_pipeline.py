@@ -4,13 +4,19 @@ import json
 import unittest
 from pathlib import Path
 
-from explainable_reranker.data.sentence_index import build_sentence_index
-from explainable_reranker.distill.dataset import build_training_batch
+from explainable_reranker.data.sentence_index import IndexedSentence, build_sentence_index
+from explainable_reranker.distill.dataset import (
+    CandidateTrainingExample,
+    QueryTrainingBatch,
+    SentenceTrainingLabel,
+    build_training_batch,
+)
 from explainable_reranker.distill.gates import HardConcreteGate, hard_select_from_logits
 from explainable_reranker.distill.losses import listwise_kd_loss, total_distillation_loss
 from explainable_reranker.distill.trainer import TrainingSchedule, run_loss_only_step
 from explainable_reranker.models.baseline import LexicalBaselineReranker
 from explainable_reranker.models.full_input_kd import FullInputKDStudent
+from explainable_reranker.models.select_predict.generator import GateOutput
 from explainable_reranker.models.select_predict.model import SelectThenPredictModel
 from explainable_reranker.teacher.label_ranking import HeuristicRankingTeacher
 from explainable_reranker.teacher.label_rationale import HeuristicRationaleTeacher, merge_ranking_and_rationales
@@ -98,6 +104,86 @@ class DistillPipelineTest(unittest.TestCase):
         self.assertEqual(warmup.generator_mask_ratio, 0.0)
         self.assertEqual(later.teacher_mask_ratio, 0.0)
         self.assertEqual(later.generator_mask_ratio, 1.0)
+
+
+class _MarkerGenerator:
+    """Selects a sentence iff its text contains 'KEEP'; deterministic gate probs."""
+
+    def select(self, query, sentences):
+        outputs = []
+        for sentence in sentences:
+            keep = "KEEP" in sentence.text
+            outputs.append(
+                GateOutput(
+                    sentence_id=sentence.sentence_id,
+                    logit=0.0,
+                    probability=0.99 if keep else 0.01,
+                    selected=keep,
+                )
+            )
+        return outputs
+
+
+class _EmptyPacksHighPredictor:
+    """Scores empty packs high so the student order reverses the teacher order."""
+
+    def score(self, query, packed_evidence):
+        return 0.0 if packed_evidence.strip() else 5.0
+
+
+class RunLossOnlyStepAlignmentTest(unittest.TestCase):
+    """Regression for the candidate-order mismatch in run_loss_only_step."""
+
+    def _batch(self) -> QueryTrainingBatch:
+        def sentence(book_id: str, sentence_id: str, text: str) -> IndexedSentence:
+            return IndexedSentence(
+                sentence_id=sentence_id,
+                response_id="r",
+                book_id=book_id,
+                source_type="synopsis",
+                source_id="s",
+                sent_idx=1,
+                text=text,
+                text_hash="h",
+                char_start=0,
+                char_end=len(text),
+                token_offsets=(),
+            )
+
+        cand_a = CandidateTrainingExample(
+            book_id="A",
+            title="A",
+            teacher_score=3.0,
+            sentences=(
+                SentenceTrainingLabel(sentence=sentence("A", "sA", "KEEP relevant"), selected=1),
+            ),
+        )
+        cand_b = CandidateTrainingExample(
+            book_id="B",
+            title="B",
+            teacher_score=0.0,
+            sentences=(
+                SentenceTrainingLabel(sentence=sentence("B", "sB", "unrelated"), selected=0),
+            ),
+        )
+        return QueryTrainingBatch(
+            query_id="q", response_id="r", query="q", candidates=(cand_a, cand_b)
+        )
+
+    def test_loss_terms_align_with_candidate_order_not_student_rank(self) -> None:
+        model = SelectThenPredictModel(_MarkerGenerator(), _EmptyPacksHighPredictor())
+        batch = self._batch()
+
+        # The student reverses the teacher order: A is selected (low score), B packs
+        # nothing (high score), so rerank_batch sorts to [B, A].
+        ranked = model.rerank_batch(batch)
+        self.assertEqual([output.book_id for output in ranked], ["B", "A"])
+
+        # In candidate order the gate probs (0.99, 0.01) match the targets (1, 0), so
+        # the select BCE is ~0. The old sorted-output bug paired (0.01,1)+(0.99,0)
+        # crosswise → a large select loss.
+        loss = run_loss_only_step(model, batch)
+        self.assertLess(loss.select, 0.1)
 
 
 if __name__ == "__main__":
