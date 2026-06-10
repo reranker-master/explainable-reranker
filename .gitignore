@@ -15,6 +15,7 @@ build/
 venv/
 env/
 .env.local
+.env
 
 # pytest / coverage
 .pytest_cache/
