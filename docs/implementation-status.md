@@ -30,6 +30,11 @@ and a production skeleton, so the whole pipeline runs and is tested locally:
   `BedrockClaudeChatModel` (Opus 4.8, lazy `boto3`).
   `teacher.grounded_teacher.LLMGroundedTeacher` orchestrates the 2-pass labeling,
   validation, retries, and self-consistency.
+- Teacher batch operations: `teacher.batch` plus `scripts/teacher_batch.py`
+  keep the sync teacher path intact while adding a human-reviewed AWS Bedrock
+  Batch Inference path: prepare ranking JSONL -> submit/fetch/review -> prepare
+  rationale JSONL -> submit/fetch/review -> finalize approved labels into the same
+  `data/labels/<response_id>.json` schema consumed by training.
 - topa.page retrieval: `topa.client.TopaPageClient` protocol with
   `DummyTopaPageClient` and `HttpTopaPageClient` (stdlib `urllib`, injectable
   opener); `collect_snapshot` ties fetch → immutable raw snapshot → parse.
@@ -108,6 +113,32 @@ pip install -e '.[teacher]'
 PYTHONPATH=src ANTHROPIC_API_KEY=... python3 scripts/collect_and_label.py \
     --queries data/queries.txt --out data --max-sentences 16
 # → data/snapshots/<schema>/<response_id>.json  and  data/labels/<response_id>.json
+```
+
+For larger teacher runs, keep snapshots fixed first and run the Bedrock batch
+path step by step so a person can inspect the artifacts before each next stage:
+
+```bash
+PYTHONPATH=src python3 scripts/teacher_batch.py prepare-ranking \
+    --batch-dir data/teacher_batches/pilot-001 --snapshots data/snapshots
+PYTHONPATH=src python3 scripts/teacher_batch.py submit-ranking \
+    --batch-dir data/teacher_batches/pilot-001 --role-arn ... --model-id ... \
+    --s3-input s3://.../input --s3-output s3://.../output
+PYTHONPATH=src python3 scripts/teacher_batch.py fetch-ranking \
+    --batch-dir data/teacher_batches/pilot-001
+PYTHONPATH=src python3 scripts/teacher_batch.py review-ranking \
+    --batch-dir data/teacher_batches/pilot-001 --approve-valid
+PYTHONPATH=src python3 scripts/teacher_batch.py prepare-rationale \
+    --batch-dir data/teacher_batches/pilot-001
+PYTHONPATH=src python3 scripts/teacher_batch.py submit-rationale \
+    --batch-dir data/teacher_batches/pilot-001 --role-arn ... --model-id ... \
+    --s3-input s3://.../input --s3-output s3://.../output
+PYTHONPATH=src python3 scripts/teacher_batch.py fetch-rationale \
+    --batch-dir data/teacher_batches/pilot-001
+PYTHONPATH=src python3 scripts/teacher_batch.py review-labels \
+    --batch-dir data/teacher_batches/pilot-001 --approve-valid
+PYTHONPATH=src python3 scripts/teacher_batch.py finalize \
+    --batch-dir data/teacher_batches/pilot-001 --labels data/labels
 ```
 
 The live `/api/search/search-candidates` endpoint returns the full candidate set

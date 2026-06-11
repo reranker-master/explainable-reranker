@@ -24,6 +24,9 @@ gpu = [
 teacher = [
     "anthropic>=0.69",
 ]
+bedrock = [
+    "boto3>=1.34",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

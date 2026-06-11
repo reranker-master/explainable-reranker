@@ -79,9 +79,14 @@ class NeuralBackendTest(unittest.TestCase):
 
     def test_hf_backend_raises_without_torch(self) -> None:
         config = load_lora_config(LORA_CONFIG)
-        # torch/transformers/peft are absent in the offline env -> clear RuntimeError.
-        with self.assertRaises((RuntimeError, NotImplementedError)):
-            HFSentenceGenerator(config).logits("q", list(self.index))
+        # Offline envs without torch/transformers/peft should fail clearly; GPU
+        # environments with the local model cache should produce one logit per
+        # sentence instead.
+        try:
+            logits = HFSentenceGenerator(config).logits("q", list(self.index))
+        except (RuntimeError, NotImplementedError):
+            return
+        self.assertEqual(len(logits), len(self.index))
 
     def test_model_accepts_swappable_backends(self) -> None:
         model = SelectThenPredictModel(
