@@ -24,6 +24,7 @@ import argparse
 import json
 from pathlib import Path
 
+from explainable_reranker.config.env import load_project_dotenv
 from explainable_reranker.data.evidence_fallback import (
     StaticEvidenceFallback,
     augment_with_fallback,
@@ -78,6 +79,7 @@ def _scripted_teacher_response(response, sentence_index) -> str:
 
 
 def main() -> int:
+    load_project_dotenv()
     parser = argparse.ArgumentParser(description="Collect topa candidates + Opus teacher labels.")
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--queries", type=Path, help="file with one query per line")

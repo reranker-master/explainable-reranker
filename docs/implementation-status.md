@@ -116,7 +116,9 @@ PYTHONPATH=src ANTHROPIC_API_KEY=... python3 scripts/collect_and_label.py \
 ```
 
 For larger teacher runs, keep snapshots fixed first and run the Bedrock batch
-path step by step so a person can inspect the artifacts before each next stage:
+path step by step so a person can inspect the artifacts before each next stage.
+Both teacher scripts auto-load `.env` and `.env.local` from the project root;
+copy `.env.example` to `.env.local` and fill in the AWS/Anthropic values:
 
 ```bash
 PYTHONPATH=src python3 scripts/teacher_batch.py prepare-ranking \
