@@ -59,11 +59,18 @@ def load_batches(snapshots_dir: Path, labels_dir: Path) -> list[QueryTrainingBat
             query_id=response.query_id,
             response_id=response.response_id,
         )
-        # Injected hard negatives carry a known hard label of 0, recovered from the
-        # snapshot marker so the §2 anchor loss (_hard_anchor) actually fires.
-        hard_labels = hard_label_map(response) or None
+        # Hard negatives carry a known hard label of 0 so the §2 anchor loss
+        # (_hard_anchor) fires. Two sources, unioned: snapshot-injected negatives
+        # (recovered from the marker) and the in-pool traps the teacher flagged in
+        # its label — the latter are the books retrieval actually surfaced, matching
+        # the decision boundary the reranker sees at inference.
+        hard_labels = dict(hard_label_map(response))
+        for book_id in teacher_label.hard_negatives:
+            hard_labels.setdefault(book_id, 0)
         batches.append(
-            build_training_batch(response, sentence_index, teacher_label, hard_labels=hard_labels)
+            build_training_batch(
+                response, sentence_index, teacher_label, hard_labels=hard_labels or None
+            )
         )
     if skipped:
         print(f"warning: {skipped} snapshot(s) had no matching teacher label and were skipped")

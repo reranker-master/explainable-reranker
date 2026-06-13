@@ -1,7 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
+
+# Canonical hard-negative reasons (mirrors teacher.hard_negatives), so the teacher's
+# in-pool trap flags group by the same strategy vocabulary as injected negatives.
+HARD_NEGATIVE_REASONS = {"same_genre_diff_mood", "title_variant", "other"}
 
 
 @dataclass(frozen=True)
@@ -18,12 +22,27 @@ class TeacherRationale:
 
 
 @dataclass(frozen=True)
+class TeacherHardNegative:
+    """A candidate the teacher judged a plausible-but-wrong trap within the pool.
+
+    These are *in-pool* hard negatives: books retrieval actually surfaced, so the
+    label drives the §2 anchor loss on the exact decision boundary the reranker
+    faces at inference (no out-of-pool injection / train-serve mismatch).
+    """
+
+    book_id: str
+    reason: str
+    note: str = ""
+
+
+@dataclass(frozen=True)
 class TeacherLabel:
     query_id: str
     response_id: str
     ranking: tuple[TeacherRankingItem, ...]
     rationales: dict[str, TeacherRationale]
     raw: dict[str, Any]
+    hard_negatives: dict[str, TeacherHardNegative] = field(default_factory=dict)
 
     def score_by_book(self) -> dict[str, float]:
         return {item.book_id: item.score for item in self.ranking}
@@ -72,12 +91,28 @@ def parse_teacher_label(
             reason=str(rationale_payload.get("reason", "")),
         )
 
+    hard_negatives_payload = payload.get("hard_negatives", {})
+    if not isinstance(hard_negatives_payload, dict):
+        raise ValueError("teacher output hard_negatives must be an object keyed by book id")
+    hard_negatives: dict[str, TeacherHardNegative] = {}
+    for book_id, hn_payload in hard_negatives_payload.items():
+        if isinstance(hn_payload, dict):
+            reason = str(hn_payload.get("reason", "other") or "other")
+            note = str(hn_payload.get("note", ""))
+        else:
+            # Tolerate a bare reason string, e.g. {"book_id": "title_variant"}.
+            reason, note = str(hn_payload or "other"), ""
+        hard_negatives[str(book_id)] = TeacherHardNegative(
+            book_id=str(book_id), reason=reason, note=note
+        )
+
     return TeacherLabel(
         query_id=query_id,
         response_id=response_id,
         ranking=tuple(ranking),
         rationales=rationales,
         raw=payload,
+        hard_negatives=hard_negatives,
     )
 
 
@@ -103,6 +138,14 @@ def validate_teacher_label(
     sorted_scores = [item.score for item in label.ranking]
     if sorted_scores != sorted(sorted_scores, reverse=True):
         errors.append("ranking is not sorted by descending score")
+
+    for book_id, hard_negative in label.hard_negatives.items():
+        if book_id not in candidate_book_ids:
+            errors.append(f"hard_negative references unknown book_id={book_id}")
+        if hard_negative.reason not in HARD_NEGATIVE_REASONS:
+            errors.append(
+                f"hard_negative for book_id={book_id} has unknown reason={hard_negative.reason!r}"
+            )
 
     top_books = label.ranked_book_ids()[:require_rationales_for_top_k]
     for book_id in top_books:

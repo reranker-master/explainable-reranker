@@ -62,9 +62,14 @@ def _read_cache(path: Path) -> dict[str, Any] | None:
 
 
 def _write_cache(path: Path, payload: dict[str, Any]) -> None:
+    # Preserve key order exactly as received: a sort_keys=True round-trip would
+    # reorder nested topa `chunks` (e.g. synopsis vs review), changing the prompt
+    # built on a cache hit and breaking teacher-cache reuse across the live->cache
+    # boundary. Keeping insertion order makes the cached payload byte-equivalent to
+    # the live response.
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=False),
         encoding="utf-8",
     )
 

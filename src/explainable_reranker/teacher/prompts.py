@@ -26,8 +26,13 @@ def build_listwise_prompt(
         "",
         "Task A: rank candidate books by relevance to the query.",
         "Return JSON with ranking sorted by descending score in the 0..3 range.",
-        "The pool deliberately mixes in hard negatives (plausible but wrong: same genre/opposite mood,",
-        "or duplicate editions). Give those a low score (0..0.5) rather than be fooled by similarity.",
+        "Some candidates are hard negatives: plausible but wrong for this query — same genre but the",
+        "opposite mood/intent, or a duplicate edition (box-set/revised) of another candidate. Score",
+        "those low (0..0.5) rather than be fooled by surface similarity, AND list each one under",
+        '"hard_negatives" keyed by book_id with a reason. Use reason "same_genre_diff_mood" (looks',
+        'relevant by genre/title but the mood or intent is wrong), "title_variant" (duplicate edition',
+        'of another candidate), or "other". Only flag books that look relevant but are traps — do not',
+        "flag books that are simply unrelated. Leave hard_negatives empty if the pool has no such traps.",
         "",
         f"[QUERY] {response.query}",
     ]
@@ -36,7 +41,9 @@ def build_listwise_prompt(
         for sentence in evidence_by_book[candidate.book_id][:max_sentences_per_book]:
             blocks.append(f"  {sentence.sentence_id}) {sentence.text}")
     blocks.append(
-        'Schema: {"ranking":[{"book":"book_id","score":0.0}],"rationales":{}}'
+        'Schema: {"ranking":[{"book":"book_id","score":0.0}],'
+        '"hard_negatives":{"book_id":{"reason":"same_genre_diff_mood","note":"one short reason"}},'
+        '"rationales":{}}'
     )
     return "\n".join(blocks)
 

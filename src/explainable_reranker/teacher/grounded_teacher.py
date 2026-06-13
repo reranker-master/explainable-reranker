@@ -78,6 +78,9 @@ class LLMGroundedTeacher:
         # score anyway, so this changes no signal.
         merged = {
             "ranking": _sorted_ranking(ranking_payload.get("ranking", [])),
+            # In-pool hard negatives come from Pass A (the teacher sees the whole pool
+            # there); carry them onto the final label for the §2 anchor loss.
+            "hard_negatives": ranking_payload.get("hard_negatives", {}),
             "rationales": rationale_payload.get("rationales", {}),
         }
         label = parse_teacher_label(
