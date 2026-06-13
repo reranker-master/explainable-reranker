@@ -14,10 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from explainable_reranker.config.env import load_project_dotenv
+from explainable_reranker.data.snapshot_store import SnapshotStore
+from explainable_reranker.topa.client import HttpTopaPageClient
 from explainable_reranker.teacher.batch import (
     BatchModelConfig,
     BedrockBatchClient,
     approve_review_file,
+    collect_snapshots_for_queries,
     fetch_batch_stage,
     finalize_labels,
     prepare_ranking_batch,
@@ -70,6 +73,10 @@ def _review_summary(path: Path) -> dict[str, int]:
     return summary
 
 
+def _load_queries(path: Path) -> list[str]:
+    return [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
 def main() -> int:
     load_project_dotenv()
     parser = argparse.ArgumentParser(
@@ -80,6 +87,10 @@ def main() -> int:
     prepare_ranking = sub.add_parser("prepare-ranking")
     prepare_ranking.add_argument("--batch-dir", required=_env_path("TEACHER_BATCH_DIR") is None, type=Path, default=_env_path("TEACHER_BATCH_DIR"))
     prepare_ranking.add_argument("--snapshots", required=False, type=Path, default=_env_path("TEACHER_SNAPSHOTS_DIR", "data/snapshots"))
+    prepare_ranking.add_argument("--queries", type=Path, default=_env_path("TEACHER_QUERIES_FILE"), help="optional query file; snapshots are collected before prompt generation")
+    prepare_ranking.add_argument("--base-url", default=os.environ.get("TOPA_BASE_URL", "https://www.topa.page"))
+    prepare_ranking.add_argument("--path", default=os.environ.get("TOPA_SEARCH_PATH", "/api/search/search-candidates"))
+    prepare_ranking.add_argument("--top-k", type=int, default=_env_int("TOPA_TOP_K"))
     prepare_ranking.add_argument("--max-sentences", type=int, default=_env_int("TEACHER_MAX_SENTENCES", 16))
     prepare_ranking.add_argument("--max-tokens", type=int, default=_env_int("BEDROCK_MAX_TOKENS", 32000))
     prepare_ranking.add_argument("--temperature", type=float, default=_env_float("BEDROCK_TEMPERATURE", 0.0))
@@ -155,6 +166,16 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.command == "prepare-ranking":
+        if args.queries is not None:
+            queries = _load_queries(args.queries)
+            if not queries:
+                raise SystemExit(f"no queries found in {args.queries}")
+            collect_snapshots_for_queries(
+                client=HttpTopaPageClient(args.base_url, path=args.path),
+                store=SnapshotStore(args.snapshots),
+                queries=queries,
+                top_k=args.top_k,
+            )
         result = prepare_ranking_batch(
             batch_dir=args.batch_dir,
             snapshots_dir=args.snapshots,

@@ -7,10 +7,12 @@ from pathlib import Path
 
 from explainable_reranker.data.sentence_index import build_sentence_index
 from explainable_reranker.data.snapshot_store import SnapshotStore
+from explainable_reranker.topa.client import DummyTopaPageClient
 from explainable_reranker.teacher.batch import (
     BatchModelConfig,
     BedrockBatchClient,
     approve_review_file,
+    collect_snapshots_for_queries,
     fetch_batch_stage,
     finalize_labels,
     make_record_id,
@@ -86,6 +88,21 @@ class TeacherBatchTest(unittest.TestCase):
                 ]
             },
         }
+
+    def test_collect_snapshots_for_query_file_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            snapshots = root / "snapshots"
+            payload = self._payload("resp_query_file_001")
+            records = collect_snapshots_for_queries(
+                client=DummyTopaPageClient(default=payload),
+                store=SnapshotStore(snapshots),
+                queries=["위로되는 가족 이야기"],
+            )
+
+            self.assertEqual(len(records), 1)
+            self.assertTrue(Path(records[0].path).exists())
+            self.assertFalse((root / "labels").exists())
 
     def test_prepare_ranking_writes_bedrock_jsonl_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

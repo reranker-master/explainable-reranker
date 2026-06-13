@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from explainable_reranker.data.sentence_index import IndexedSentence, build_sentence_index
+from explainable_reranker.data.snapshot_store import SnapshotRecord, SnapshotStore
 from explainable_reranker.teacher.llm_client import (
     BedrockClaudeChatModel,
     extract_json_object,
@@ -24,6 +25,7 @@ from explainable_reranker.teacher.schemas import (
     validate_teacher_label,
 )
 from explainable_reranker.topa.adapter import TopaPageResponse, parse_topa_page_response
+from explainable_reranker.topa.client import TopaPageClient, collect_snapshot
 
 BatchStage = Literal["ranking", "rationale"]
 
@@ -182,6 +184,20 @@ def ensure_batch_layout(batch_dir: Path) -> None:
         "intermediate/ranking",
     ):
         (batch_dir / relative).mkdir(parents=True, exist_ok=True)
+
+
+def collect_snapshots_for_queries(
+    *,
+    client: TopaPageClient,
+    store: SnapshotStore,
+    queries: list[str],
+    top_k: int | None = None,
+) -> list[SnapshotRecord]:
+    records: list[SnapshotRecord] = []
+    for query in queries:
+        record, _response = collect_snapshot(client, store, query, top_k=top_k)
+        records.append(record)
+    return records
 
 
 def prepare_ranking_batch(
