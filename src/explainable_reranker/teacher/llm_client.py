@@ -81,6 +81,9 @@ class BedrockClaudeChatModel:
         self.max_tokens = max_tokens
         self.temperature = temperature
         self._client = client
+        # Token usage from the most recent generate() call, surfaced for the
+        # cost ledger (io_cache.CachingChatModel reads this after each call).
+        self.last_usage: dict | None = None
 
     def _bedrock_client(self) -> object:
         if self._client is None:
@@ -115,7 +118,10 @@ class BedrockClaudeChatModel:
             body=json.dumps(self._request_body(system=system, user=user)),
         )
         payload = response["body"].read()
-        return self._extract_text(json.loads(payload))
+        body = json.loads(payload)
+        usage = body.get("usage")
+        self.last_usage = dict(usage) if isinstance(usage, dict) else None
+        return self._extract_text(body)
 
 
 class AnthropicClaudeChatModel:
@@ -145,6 +151,7 @@ class AnthropicClaudeChatModel:
         self.max_tokens = max_tokens
         self.effort = effort
         self._client = client
+        self.last_usage: dict | None = None
 
     def _anthropic_client(self) -> object:
         if self._client is None:
@@ -169,7 +176,29 @@ class AnthropicClaudeChatModel:
             messages=[{"role": "user", "content": user}],
         ) as stream:
             message = stream.get_final_message()
+        self.last_usage = _usage_to_dict(getattr(message, "usage", None))
         return "".join(block.text for block in message.content if block.type == "text")
+
+
+def _usage_to_dict(usage: object) -> dict | None:
+    """Best-effort normalization of an SDK usage object to a plain dict for logging."""
+
+    if usage is None:
+        return None
+    for attr in ("model_dump", "to_dict", "dict"):
+        method = getattr(usage, attr, None)
+        if callable(method):
+            try:
+                return dict(method())
+            except Exception:  # noqa: BLE001 - logging must never break a call
+                pass
+    if isinstance(usage, dict):
+        return dict(usage)
+    return {
+        key: getattr(usage, key)
+        for key in ("input_tokens", "output_tokens")
+        if getattr(usage, key, None) is not None
+    } or None
 
 
 def extract_json_object(text: str) -> dict:

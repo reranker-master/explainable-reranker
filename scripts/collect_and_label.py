@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 
 from explainable_reranker.config.env import load_project_dotenv
@@ -31,6 +32,7 @@ from explainable_reranker.data.evidence_fallback import (
 )
 from explainable_reranker.data.sentence_index import build_sentence_index
 from explainable_reranker.data.snapshot_store import SnapshotStore
+from explainable_reranker.io_cache import CachingChatModel, CachingTopaPageClient
 from explainable_reranker.teacher.grounded_teacher import (
     GroundedTeacherConfig,
     LLMGroundedTeacher,
@@ -41,7 +43,11 @@ from explainable_reranker.teacher.hard_negatives import (
     StaticHardNegativeSource,
     inject_hard_negatives,
 )
-from explainable_reranker.teacher.llm_client import AnthropicClaudeChatModel, ScriptedChatModel
+from explainable_reranker.teacher.llm_client import (
+    AnthropicClaudeChatModel,
+    BedrockClaudeChatModel,
+    ScriptedChatModel,
+)
 from explainable_reranker.topa.client import HttpTopaPageClient, collect_snapshot
 
 
@@ -50,6 +56,61 @@ def _load_queries(args: argparse.Namespace) -> list[str]:
         return [args.query]
     lines = Path(args.queries).read_text(encoding="utf-8").splitlines()
     return [line.strip() for line in lines if line.strip()]
+
+
+def _candidate_score(candidate: dict) -> tuple[float, float]:
+    """Sort key mirroring topa.adapter: higher retrieval score first, rank as tiebreak.
+
+    Falls back through the same field names the adapter accepts so truncation keeps
+    the candidates the teacher would also have scored highest.
+    """
+
+    debug = candidate.get("retrieval_debug") if isinstance(candidate.get("retrieval_debug"), dict) else {}
+    score = None
+    for source in (candidate, debug):
+        for key in ("score", "retrieval_score", "rrf_score"):
+            value = source.get(key)
+            if value is not None:
+                try:
+                    score = float(value)
+                except (TypeError, ValueError):
+                    score = None
+                if score is not None:
+                    break
+        if score is not None:
+            break
+    rank = candidate.get("rank", candidate.get("pre_rerank_rank"))
+    try:
+        rank_val = float(rank)
+    except (TypeError, ValueError):
+        rank_val = float("inf")
+    # Primary: score desc (None -> -inf); secondary: smaller rank first.
+    return (score if score is not None else float("-inf"), -rank_val)
+
+
+def _truncate_candidates(payload: dict, max_candidates: int) -> dict:
+    """Keep only the top-N candidates by retrieval score before labeling.
+
+    Returns a shallow-copied payload so the original fetched object is untouched;
+    the truncated pool is what gets hashed into the snapshot and sent to the teacher,
+    so training sees exactly the N candidates the teacher labeled.
+    """
+
+    if max_candidates is None or max_candidates <= 0:
+        return payload
+    for key in ("candidates", "books", "items", "results"):
+        items = payload.get(key)
+        if isinstance(items, list) and len(items) > max_candidates:
+            dicts = [item for item in items if isinstance(item, dict)]
+            if len(dicts) != len(items):
+                return payload  # malformed pool; let the parser raise downstream
+            kept = sorted(dicts, key=_candidate_score, reverse=True)[:max_candidates]
+            truncated = dict(payload)
+            truncated[key] = kept
+            if "count" in truncated:
+                truncated["count"] = len(kept)
+            return truncated
+    return payload
 
 
 def _scripted_teacher_response(response, sentence_index) -> str:
@@ -88,10 +149,41 @@ def main() -> int:
     parser.add_argument("--base-url", default="https://www.topa.page")
     parser.add_argument("--path", default="/api/search/search-candidates")
     parser.add_argument("--top-k", type=int, default=None, help="omit to fetch the full set")
+    parser.add_argument(
+        "--max-candidates",
+        type=int,
+        default=None,
+        help="cap the pool to the top-N candidates by topa retrieval score before labeling; "
+        "only these N are sent to the teacher and stored in the snapshot (e.g. 50)",
+    )
     parser.add_argument("--max-sentences", type=int, default=16, help="evidence cap per book (§1.5)")
     parser.add_argument("--top-k-rationale", type=int, default=10)
     parser.add_argument("--model-id", default=None, help="override the Opus model id")
     parser.add_argument("--dummy", action="store_true", help="offline scripted teacher (no API)")
+    parser.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="disable the topa/teacher I/O cache+ledger (every call hits the network "
+        "and nothing is recorded for reuse); caching is on by default",
+    )
+    parser.add_argument(
+        "--bedrock",
+        action="store_true",
+        help="use AWS Bedrock Opus (BEDROCK_MODEL_ID / AWS creds) instead of the first-party "
+        "Anthropic API; the synchronous (non-batch) path for environments with Bedrock access",
+    )
+    parser.add_argument(
+        "--region",
+        default=None,
+        help="AWS region for --bedrock (default: AWS_REGION / AWS_DEFAULT_REGION / us-east-1)",
+    )
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=None,
+        help="max output tokens per teacher call (default: BEDROCK_MAX_TOKENS or 32000); the "
+        "default 2048 would truncate a full listwise ranking",
+    )
     parser.add_argument(
         "--self-consistency",
         type=int,
@@ -135,7 +227,15 @@ def main() -> int:
     labels_dir = args.out / "labels"
     labels_dir.mkdir(parents=True, exist_ok=True)
     store = SnapshotStore(snapshots_root)
+    ledger_path = None if args.no_cache else args.out / "ledger.jsonl"
+    cache_root = args.out / "cache"
     client = HttpTopaPageClient(args.base_url, path=args.path)
+    if not args.no_cache:
+        # Record + reuse every topa request/response so reruns don't re-hit (or
+        # re-pay for) the endpoint and snapshots stay byte-stable.
+        client = CachingTopaPageClient(
+            client, cache_dir=cache_root / "topa", ledger_path=ledger_path
+        )
     teacher_config = GroundedTeacherConfig(
         top_k_rationale=args.top_k_rationale, max_sentences_per_book=args.max_sentences
     )
@@ -150,10 +250,18 @@ def main() -> int:
     for i, query in enumerate(queries, start=1):
         print(f"[{i}/{len(queries)}] {query}")
         transform = None
-        if hard_negative_source is not None or evidence_fallback_source is not None:
+        if (
+            hard_negative_source is not None
+            or evidence_fallback_source is not None
+            or args.max_candidates is not None
+        ):
             def transform(payload, _query=query):
-                # Mix hard negatives in first, then backfill thin candidates so the
-                # fallback also reaches injected negatives that lack evidence.
+                # Cap the retrieved pool to the top-N candidates by retrieval score
+                # first, so only those reach the teacher and the stored snapshot
+                # (training then sees the same N). Hard negatives / fallback augment
+                # that capped pool afterwards.
+                if args.max_candidates is not None:
+                    payload = _truncate_candidates(payload, args.max_candidates)
                 if hard_negative_source is not None:
                     negatives = hard_negative_source.fetch(_query, payload)
                     payload = inject_hard_negatives(
@@ -178,8 +286,33 @@ def main() -> int:
             chat_model = ScriptedChatModel(
                 _scripted_teacher_response(response, sentence_index)
             )
+            provider, model_id = "scripted", "scripted"
+        elif args.bedrock:
+            model_id = args.model_id or os.environ.get("BEDROCK_MODEL_ID")
+            chat_model = BedrockClaudeChatModel(
+                model_id=model_id,
+                region=(
+                    args.region
+                    or os.environ.get("AWS_REGION")
+                    or os.environ.get("AWS_DEFAULT_REGION")
+                    or "us-east-1"
+                ),
+                max_tokens=args.max_tokens or int(os.environ.get("BEDROCK_MAX_TOKENS") or 32000),
+            )
+            provider = "bedrock"
         else:
             chat_model = AnthropicClaudeChatModel(model_id=args.model_id)
+            provider, model_id = "anthropic", chat_model.model_id
+        if not args.no_cache:
+            # Cache + log every teacher completion so identical prompts replay for
+            # free and the full prompt/response is kept for later reuse and audit.
+            chat_model = CachingChatModel(
+                chat_model,
+                cache_dir=cache_root / "teacher",
+                model_id=model_id or "unknown",
+                provider=provider,
+                ledger_path=ledger_path,
+            )
         teacher = LLMGroundedTeacher(chat_model, teacher_config)
         try:
             if args.self_consistency >= 2:

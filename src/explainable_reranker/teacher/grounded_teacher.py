@@ -71,8 +71,13 @@ class LLMGroundedTeacher:
             )
         )
 
+        # The model is asked to return ranking sorted by descending score, but it
+        # does not always order the array perfectly even when every score itself is
+        # valid. Normalize the order here so an otherwise-grounded label is not
+        # rejected over presentation; scores are untouched, and training re-sorts by
+        # score anyway, so this changes no signal.
         merged = {
-            "ranking": ranking_payload.get("ranking", []),
+            "ranking": _sorted_ranking(ranking_payload.get("ranking", [])),
             "rationales": rationale_payload.get("rationales", {}),
         }
         label = parse_teacher_label(
@@ -123,6 +128,26 @@ class LLMGroundedTeacher:
             except ValueError as exc:
                 last_error = exc
         raise TeacherLabelingError(f"chat model returned no parseable JSON: {last_error}")
+
+
+def _ranking_score(item: dict) -> float:
+    try:
+        return float(item.get("score", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _sorted_ranking(items: list) -> list:
+    """Stable-sort ranking entries by descending score, leaving non-dicts in place.
+
+    Only well-formed ``{"book": ..., "score": ...}`` dicts are reordered; anything
+    else is passed through untouched so ``parse_teacher_label`` still raises on it.
+    """
+
+    dict_items = [item for item in items if isinstance(item, dict)]
+    if len(dict_items) != len(items):
+        return items
+    return sorted(dict_items, key=_ranking_score, reverse=True)
 
 
 def _ranked_book_ids(ranking_payload: dict) -> list[str]:
