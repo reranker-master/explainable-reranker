@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 from pathlib import Path
 
 from explainable_reranker.config.env import load_project_dotenv
@@ -111,6 +112,27 @@ def _truncate_candidates(payload: dict, max_candidates: int) -> dict:
                 truncated["count"] = len(kept)
             return truncated
     return payload
+
+
+def _collect_with_retries(client, store, query, *, top_k, payload_transform, retries=3, backoff=3.0):
+    """Collect a topa snapshot, retrying transient failures (the endpoint times out).
+
+    topa.page intermittently drops reads; a single timeout used to abort the whole
+    batch. Retry a few times with linear backoff, then re-raise so the caller can
+    record the query as failed and move on. Cached queries return on the first try
+    without re-hitting the network.
+    """
+
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            return collect_snapshot(client, store, query, top_k=top_k, payload_transform=payload_transform)
+        except Exception as exc:  # noqa: BLE001 - topa flakiness surfaces in several forms
+            last_error = exc
+            print(f"    topa attempt {attempt}/{retries} failed: {exc}")
+            if attempt < retries:
+                time.sleep(backoff * attempt)
+    raise last_error  # type: ignore[misc]
 
 
 def _scripted_teacher_response(response, sentence_index) -> str:
@@ -272,49 +294,49 @@ def main() -> int:
                         payload, evidence_fallback_source, min_sentences=args.min_evidence
                     )
                 return payload
-        record, response = collect_snapshot(
-            client, store, query, top_k=args.top_k, payload_transform=transform
-        )
-        sentence_index = build_sentence_index(response)
-        injected = sum(1 for c in response.candidates if c.is_hard_negative)
-        print(
-            f"    candidates={len(response.candidates)} (hard_neg={injected}) "
-            f"sentences={len(sentence_index)}"
-        )
-
-        if args.dummy:
-            chat_model = ScriptedChatModel(
-                _scripted_teacher_response(response, sentence_index)
-            )
-            provider, model_id = "scripted", "scripted"
-        elif args.bedrock:
-            model_id = args.model_id or os.environ.get("BEDROCK_MODEL_ID")
-            chat_model = BedrockClaudeChatModel(
-                model_id=model_id,
-                region=(
-                    args.region
-                    or os.environ.get("AWS_REGION")
-                    or os.environ.get("AWS_DEFAULT_REGION")
-                    or "us-east-1"
-                ),
-                max_tokens=args.max_tokens or int(os.environ.get("BEDROCK_MAX_TOKENS") or 32000),
-            )
-            provider = "bedrock"
-        else:
-            chat_model = AnthropicClaudeChatModel(model_id=args.model_id)
-            provider, model_id = "anthropic", chat_model.model_id
-        if not args.no_cache:
-            # Cache + log every teacher completion so identical prompts replay for
-            # free and the full prompt/response is kept for later reuse and audit.
-            chat_model = CachingChatModel(
-                chat_model,
-                cache_dir=cache_root / "teacher",
-                model_id=model_id or "unknown",
-                provider=provider,
-                ledger_path=ledger_path,
-            )
-        teacher = LLMGroundedTeacher(chat_model, teacher_config)
         try:
+            record, response = _collect_with_retries(
+                client, store, query, top_k=args.top_k, payload_transform=transform
+            )
+            sentence_index = build_sentence_index(response)
+            injected = sum(1 for c in response.candidates if c.is_hard_negative)
+            print(
+                f"    candidates={len(response.candidates)} (hard_neg={injected}) "
+                f"sentences={len(sentence_index)}"
+            )
+
+            if args.dummy:
+                chat_model = ScriptedChatModel(
+                    _scripted_teacher_response(response, sentence_index)
+                )
+                provider, model_id = "scripted", "scripted"
+            elif args.bedrock:
+                model_id = args.model_id or os.environ.get("BEDROCK_MODEL_ID")
+                chat_model = BedrockClaudeChatModel(
+                    model_id=model_id,
+                    region=(
+                        args.region
+                        or os.environ.get("AWS_REGION")
+                        or os.environ.get("AWS_DEFAULT_REGION")
+                        or "us-east-1"
+                    ),
+                    max_tokens=args.max_tokens or int(os.environ.get("BEDROCK_MAX_TOKENS") or 32000),
+                )
+                provider = "bedrock"
+            else:
+                chat_model = AnthropicClaudeChatModel(model_id=args.model_id)
+                provider, model_id = "anthropic", chat_model.model_id
+            if not args.no_cache:
+                # Cache + log every teacher completion so identical prompts replay for
+                # free and the full prompt/response is kept for later reuse and audit.
+                chat_model = CachingChatModel(
+                    chat_model,
+                    cache_dir=cache_root / "teacher",
+                    model_id=model_id or "unknown",
+                    provider=provider,
+                    ledger_path=ledger_path,
+                )
+            teacher = LLMGroundedTeacher(chat_model, teacher_config)
             if args.self_consistency >= 2:
                 # plan §1.4: relabel with shuffled candidate order and gate on the
                 # κ / NDCG@10 / rationale-IoU agreement before trusting the label.
@@ -332,17 +354,21 @@ def main() -> int:
                 label = labels[0]
             else:
                 label = teacher.label(response, sentence_index)
+
+            label_path = labels_dir / f"{response.response_id}.json"
+            label_path.write_text(
+                json.dumps(label.raw, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+            labeled += 1
+            print(f"    labeled → {label_path}")
         except TeacherLabelingError as exc:
             failed += 1
             print(f"    teacher failed: {exc}")
             continue
-
-        label_path = labels_dir / f"{response.response_id}.json"
-        label_path.write_text(
-            json.dumps(label.raw, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        labeled += 1
-        print(f"    labeled → {label_path}")
+        except Exception as exc:  # noqa: BLE001 - isolate any per-query failure
+            failed += 1
+            print(f"    query failed: {type(exc).__name__}: {exc}")
+            continue
 
     consistency_note = (
         f", {inconsistent} below self-consistency gate" if args.self_consistency >= 2 else ""
