@@ -124,6 +124,70 @@ class BedrockClaudeChatModel:
         return self._extract_text(body)
 
 
+class BedrockConverseChatModel:
+    """Model-agnostic Bedrock teacher via the unified Converse API.
+
+    Unlike :class:`BedrockClaudeChatModel` (Anthropic-native ``invoke_model`` body),
+    this uses ``bedrock-runtime.converse``, whose request/response shape is the same
+    across providers — so it drives Qwen / DeepSeek / GLM / Kimi / MiniMax with one
+    adapter. Use it when the daily Opus token cap forces a swap to a higher-quota
+    open model. Only text blocks are returned (any reasoning blocks are dropped);
+    token usage is surfaced for the cost ledger.
+    """
+
+    def __init__(
+        self,
+        *,
+        model_id: str,
+        region: str = "us-east-1",
+        max_tokens: int = 8192,
+        temperature: float = 0.0,
+        client: object | None = None,
+    ):
+        self.model_id = model_id
+        self.region = region
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self._client = client
+        self.last_usage: dict | None = None
+
+    def _bedrock_runtime(self) -> object:
+        if self._client is None:
+            try:
+                import boto3  # lazy; only needed in the labeling env
+            except ImportError as exc:  # pragma: no cover - prod path
+                raise RuntimeError(
+                    "boto3 is required for BedrockConverseChatModel; install it in the "
+                    "labeling environment that has Bedrock access."
+                ) from exc
+            self._client = boto3.client("bedrock-runtime", region_name=self.region)
+        return self._client
+
+    @staticmethod
+    def _extract_text(response: dict) -> str:
+        message = response.get("output", {}).get("message", {})
+        blocks = message.get("content", [])
+        if not isinstance(blocks, list):
+            return ""
+        return "".join(
+            str(block.get("text", ""))
+            for block in blocks
+            if isinstance(block, dict) and "text" in block
+        )
+
+    def generate(self, *, system: str, user: str) -> str:  # pragma: no cover - prod path
+        client = self._bedrock_runtime()
+        response = client.converse(
+            modelId=self.model_id,
+            system=[{"text": system}],
+            messages=[{"role": "user", "content": [{"text": user}]}],
+            inferenceConfig={"maxTokens": self.max_tokens, "temperature": self.temperature},
+        )
+        usage = response.get("usage")
+        self.last_usage = dict(usage) if isinstance(usage, dict) else None
+        return self._extract_text(response)
+
+
 class AnthropicClaudeChatModel:
     """Production teacher backed by the first-party Anthropic API (Opus 4.8).
 

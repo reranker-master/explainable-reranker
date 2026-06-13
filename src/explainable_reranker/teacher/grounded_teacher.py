@@ -81,7 +81,12 @@ class LLMGroundedTeacher:
             # In-pool hard negatives come from Pass A (the teacher sees the whole pool
             # there); carry them onto the final label for the §2 anchor loss.
             "hard_negatives": ranking_payload.get("hard_negatives", {}),
-            "rationales": rationale_payload.get("rationales", {}),
+            # Some models (e.g. DeepSeek) cite a sentence by its trailing hash segment
+            # instead of the full colon-delimited id; resolve those back to canonical
+            # ids so a correct grounding is not rejected on formatting.
+            "rationales": _resolve_rationale_ids(
+                rationale_payload.get("rationales", {}), sentence_index
+            ),
         }
         label = parse_teacher_label(
             merged,
@@ -169,6 +174,43 @@ def _ranked_book_ids(ranking_payload: dict) -> list[str]:
         scored.append((score, book_id))
     scored.sort(key=lambda pair: pair[0], reverse=True)
     return [book_id for _score, book_id in scored]
+
+
+def _resolve_rationale_ids(rationales: dict, sentence_index: list[IndexedSentence]) -> dict:
+    """Map abbreviated rationale sentence ids back to their canonical full ids.
+
+    Models sometimes cite only the trailing hash segment (``76537e3d``) or a tail of
+    the full id (``...:6:76537e3d``) instead of the whole colon-delimited string. For
+    each cited id not already known, resolve it against the book's own sentence ids by
+    exact, last-segment, or suffix match; only a *unique* match is rewritten, so an
+    ambiguous or hallucinated id still fails validation downstream.
+    """
+
+    ids_by_book: dict[str, list[str]] = {}
+    for sentence in sentence_index:
+        ids_by_book.setdefault(sentence.book_id, []).append(sentence.sentence_id)
+
+    resolved: dict = {}
+    for book_id, payload in rationales.items():
+        if not isinstance(payload, dict):
+            resolved[book_id] = payload
+            continue
+        known = ids_by_book.get(str(book_id), [])
+        known_set = set(known)
+        new_ids: list[str] = []
+        for raw in payload.get("sentence_ids", []):
+            cid = str(raw)
+            if cid in known_set:
+                new_ids.append(cid)
+                continue
+            matches = [
+                k for k in known
+                if k.rsplit(":", 1)[-1] == cid or k.endswith(":" + cid)
+            ]
+            unique = list(dict.fromkeys(matches))
+            new_ids.append(unique[0] if len(unique) == 1 else cid)
+        resolved[book_id] = {**payload, "sentence_ids": new_ids}
+    return resolved
 
 
 def _sentence_ids_by_book(sentence_index: list[IndexedSentence]) -> dict[str, set[str]]:

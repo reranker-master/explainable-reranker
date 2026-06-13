@@ -47,6 +47,7 @@ from explainable_reranker.teacher.hard_negatives import (
 from explainable_reranker.teacher.llm_client import (
     AnthropicClaudeChatModel,
     BedrockClaudeChatModel,
+    BedrockConverseChatModel,
     ScriptedChatModel,
 )
 from explainable_reranker.topa.client import HttpTopaPageClient, collect_snapshot
@@ -195,6 +196,12 @@ def main() -> int:
         "Anthropic API; the synchronous (non-batch) path for environments with Bedrock access",
     )
     parser.add_argument(
+        "--converse",
+        action="store_true",
+        help="use the Bedrock Converse API (model-agnostic) with --model-id / BEDROCK_MODEL_ID; "
+        "for higher-quota open teachers like qwen.qwen3-vl-235b-a22b when Opus is throttled",
+    )
+    parser.add_argument(
         "--region",
         default=None,
         help="AWS region for --bedrock (default: AWS_REGION / AWS_DEFAULT_REGION / us-east-1)",
@@ -310,6 +317,19 @@ def main() -> int:
                     _scripted_teacher_response(response, sentence_index)
                 )
                 provider, model_id = "scripted", "scripted"
+            elif args.converse:
+                model_id = args.model_id or os.environ.get("BEDROCK_MODEL_ID")
+                chat_model = BedrockConverseChatModel(
+                    model_id=model_id,
+                    region=(
+                        args.region
+                        or os.environ.get("AWS_REGION")
+                        or os.environ.get("AWS_DEFAULT_REGION")
+                        or "us-east-1"
+                    ),
+                    max_tokens=args.max_tokens or int(os.environ.get("BEDROCK_MAX_TOKENS") or 8192),
+                )
+                provider = "bedrock-converse"
             elif args.bedrock:
                 model_id = args.model_id or os.environ.get("BEDROCK_MODEL_ID")
                 chat_model = BedrockClaudeChatModel(
