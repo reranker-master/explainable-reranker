@@ -20,7 +20,7 @@ torch is imported lazily so importing this module off-GPU never fails.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -224,6 +224,8 @@ def train_joint(
     config: NeuralTrainConfig = NeuralTrainConfig(),
     *,
     seed: int = 0,
+    on_epoch_end: Callable[[int, HFSentenceGenerator, HFPackedEvidencePredictor, NeuralTrainHistory], None]
+    | None = None,
 ) -> NeuralTrainHistory:  # pragma: no cover - requires torch + GPU
     torch = _import_torch()
     generator._ensure_loaded()
@@ -306,6 +308,11 @@ def train_joint(
                     f"select={history.select[-1]:.4f} teacher_mask={schedule.teacher_mask_ratio:.2f}"
                 )
             step += 1
+
+        # Per-epoch hook: checkpoint + validate for rollback / best-epoch selection.
+        # The callback is responsible for toggling eval/train mode around inference.
+        if on_epoch_end is not None:
+            on_epoch_end(_epoch, generator, predictor, history)
 
     generator.eval_mode()
     predictor.eval_mode()

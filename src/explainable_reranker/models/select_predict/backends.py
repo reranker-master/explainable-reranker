@@ -303,6 +303,13 @@ class HFSentenceGenerator:
             target_modules=list(self.config.target_modules),
         )
         self._model = get_peft_model(base, peft_config).to(self._device)
+        # Gradient checkpointing: this loop retains one full encoder graph per candidate
+        # (~50/step), so the stored O(L^2) attention activations blow up unified memory.
+        # Recomputing them in backward keeps the full pool in one step at a fraction of the
+        # memory (only active in train mode; eval inference is unaffected). use_reentrant=
+        # False + input grads is the recipe that works with a frozen LoRA base.
+        self._model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        self._model.enable_input_require_grads()
         self._tokenizer = AutoTokenizer.from_pretrained(self.config.base_model)
         # fp32 master head for stable optimization regardless of autocast dtype.
         self._head = nn.Linear(base.config.hidden_size, 1).to(self._device)
@@ -492,6 +499,10 @@ class HFPackedEvidencePredictor:
             modules_to_save=list(self.head_module_names),
         )
         self._model = get_peft_model(base, peft_config).to(self._device)
+        # See HFSentenceGenerator: recompute encoder activations in backward so a full
+        # 50-candidate step fits in unified memory (train mode only).
+        self._model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
+        self._model.enable_input_require_grads()
         self._tokenizer = AutoTokenizer.from_pretrained(self.config.base_model)
 
     def _forward_score(self, query: str, packed_evidence: str):  # pragma: no cover
