@@ -214,6 +214,13 @@ def main() -> int:
         "default 2048 would truncate a full listwise ranking",
     )
     parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="sampling temperature for the Converse teacher; >0 lets a recovery re-run vary "
+        "the output so a deterministic slip (repeat/missing rationale) can resolve",
+    )
+    parser.add_argument(
         "--self-consistency",
         type=int,
         default=0,
@@ -328,6 +335,7 @@ def main() -> int:
                         or "us-east-1"
                     ),
                     max_tokens=args.max_tokens or int(os.environ.get("BEDROCK_MAX_TOKENS") or 8192),
+                    temperature=args.temperature,
                 )
                 provider = "bedrock-converse"
             elif args.bedrock:

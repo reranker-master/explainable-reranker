@@ -155,12 +155,24 @@ class BedrockConverseChatModel:
         if self._client is None:
             try:
                 import boto3  # lazy; only needed in the labeling env
+                from botocore.config import Config
             except ImportError as exc:  # pragma: no cover - prod path
                 raise RuntimeError(
                     "boto3 is required for BedrockConverseChatModel; install it in the "
                     "labeling environment that has Bedrock access."
                 ) from exc
-            self._client = boto3.client("bedrock-runtime", region_name=self.region)
+            # Large rankings can take 1-3 min to generate; the default 60s read
+            # timeout would fire mid-generation and trigger wasteful retries (60s x3
+            # = 180s for one answer). Give generation room and keep a couple retries
+            # for genuinely transient errors.
+            config = Config(
+                read_timeout=900,
+                connect_timeout=15,
+                retries={"max_attempts": 3, "mode": "standard"},
+            )
+            self._client = boto3.client(
+                "bedrock-runtime", region_name=self.region, config=config
+            )
         return self._client
 
     @staticmethod

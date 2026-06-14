@@ -155,7 +155,18 @@ def _sorted_ranking(items: list) -> list:
     dict_items = [item for item in items if isinstance(item, dict)]
     if len(dict_items) != len(items):
         return items
-    return sorted(dict_items, key=_ranking_score, reverse=True)
+    ordered = sorted(dict_items, key=_ranking_score, reverse=True)
+    # Some models list a book more than once; keep its highest-scored occurrence
+    # (first after the descending sort) so a duplicate doesn't fail validation.
+    seen: set[str] = set()
+    deduped = []
+    for item in ordered:
+        book_id = str(item.get("book") or item.get("book_id") or "")
+        if book_id and book_id in seen:
+            continue
+        seen.add(book_id)
+        deduped.append(item)
+    return deduped
 
 
 def _ranked_book_ids(ranking_payload: dict) -> list[str]:

@@ -58,11 +58,14 @@ def build_rationale_prompt(
 ) -> str:
     evidence_by_book = _evidence_by_book(sentence_index)
     candidate_by_id = {candidate.book_id: candidate for candidate in response.candidates}
+    book_count = len(ranked_book_ids[:top_k])
     blocks = [
         SYSTEM_INSTRUCTIONS,
         "",
-        "Task B: choose grounded rationale sentence IDs for each top-ranked book.",
-        "Select 1 to 3 sentence IDs per book. Use only IDs shown below.",
+        f"Task B: choose grounded rationale sentence IDs for EACH of the {book_count} books below.",
+        f'Every one of the {book_count} listed books MUST appear in "rationales" — do not skip any.',
+        "For each book, pick 1 to 3 of its sentence IDs (this is a count of sentences per book,",
+        "NOT a number of books). Use only IDs shown below.",
         "",
         f"[QUERY] {response.query}",
     ]
