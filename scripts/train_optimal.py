@@ -229,7 +229,7 @@ def main() -> int:
     warmup = max(20, len(train_b) // 2)
     total = max(warmup + 1, args.epochs * len(train_b))
     config = NeuralTrainConfig(epochs=args.epochs, learning_rate=args.lr,
-                               warmup_steps=warmup, total_steps=total, log_every=100)
+                               warmup_steps=warmup, total_steps=total, log_every=20)
 
     rows: list[dict] = []
     t_start = [time.time()]
