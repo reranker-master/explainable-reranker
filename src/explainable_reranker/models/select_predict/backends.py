@@ -355,7 +355,14 @@ class HFSentenceGenerator:
         )
         offsets = encoded.pop("offset_mapping")[0].tolist()
         encoded = {key: value.to(self._device) for key, value in encoded.items()}
-        with self._autocast():
+        # The selection (z) is a discrete top-k over these logits; at inference it must not
+        # wobble under bf16/padding numerical noise (which would change the displayed
+        # rationale and, on near-ties, the ranking). So run the encoder in fp32 when NOT
+        # training. Training keeps bf16 autocast for the per-step memory budget.
+        import contextlib
+
+        forward_ctx = self._autocast() if self._model.training else contextlib.nullcontext()
+        with forward_ctx:
             hidden = self._model(**encoded).last_hidden_state[0]  # [seq, H]
         pooled = []
         for span_start, span_end in spans:
