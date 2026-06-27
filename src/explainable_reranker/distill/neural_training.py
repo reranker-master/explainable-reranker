@@ -244,7 +244,11 @@ def train_joint(
     history = NeuralTrainHistory()
     step = 0
     for _epoch in range(config.epochs):
-        for batch in batches:
+        # 에폭마다 재셔플: 순서(recency) 편향을 없애 모든 샘플이 위치와
+        # 무관하게 고루 학습되도록 한다. 동일 rng로 시드되어 결정성은 유지.
+        order = torch.randperm(len(batches), generator=rng).tolist()
+        for index in order:
+            batch = batches[index]
             if not batch.candidates:
                 continue
             schedule = TrainingSchedule.for_step(
