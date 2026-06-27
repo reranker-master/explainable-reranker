@@ -31,13 +31,18 @@ def load_neural_model(
     compute_dtype: str = "bfloat16",
     max_length: int = 8192,
     max_selected: int = 3,
+    select_fp32: bool = False,
 ) -> SelectThenPredictModel:  # pragma: no cover - requires torch + checkpoint
-    """Reconstruct the trained generator/predictor adapters into a serving model."""
+    """Reconstruct the trained generator/predictor adapters into a serving model.
+
+    ``select_fp32`` runs the generator's selection encoder in fp32 at inference for fully
+    deterministic rationale (no bf16/padding wobble) at ~50% extra latency; off by default.
+    """
 
     lora_config = load_lora_config(lora_config_path)
     common = {"device": device, "compute_dtype": compute_dtype, "max_length": max_length}
     generator = HFSentenceGenerator.from_pretrained(
-        checkpoint_dir, lora_config, max_selected=max_selected, **common
+        checkpoint_dir, lora_config, max_selected=max_selected, select_fp32=select_fp32, **common
     )
     predictor = HFPackedEvidencePredictor.from_pretrained(checkpoint_dir, lora_config, **common)
     return SelectThenPredictModel(generator=generator, predictor=predictor)

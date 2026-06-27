@@ -40,6 +40,7 @@ def build_model(args: argparse.Namespace):
         compute_dtype=args.compute_dtype,
         max_length=args.max_length,
         max_selected=args.max_selected,
+        select_fp32=args.select_fp32,
     )
 
 
@@ -55,6 +56,12 @@ def main() -> int:
     parser.add_argument("--compute-dtype", default="bfloat16")
     parser.add_argument("--max-length", type=int, default=8192)
     parser.add_argument("--max-selected", type=int, default=3)
+    parser.add_argument(
+        "--select-fp32",
+        action="store_true",
+        help="run the generator's selection encoder in fp32 for fully deterministic "
+        "rationale (no bf16/padding wobble); ~50%% slower, ranking unaffected. Off by default.",
+    )
     args = parser.parse_args()
 
     app = RerankApp(model=build_model(args))

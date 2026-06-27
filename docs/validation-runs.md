@@ -116,7 +116,8 @@
 | **fp32 (패치)** | 0/1383 (**0.00%**) | 0.000002 / 0.00008 |
 
 - fp32로 logit 차이 ~4000배 감소 → **선택 완전 결정론화.**
-- ⚠️ **트레이드오프: 지연 증가.** fp32 generator로 50후보 rerank가 **1.82s → 2.86s (+57%)**. 흔들림이 0.36%(그것도 풀 깊은 borderline 후보)뿐이라, **속도 우선이면 bf16 유지**, **rationale 비트-결정론이 요구사항이면 fp32**로 선택. (플래그화 권장)
+- ⚠️ **트레이드오프: 지연 증가.** fp32 generator로 50후보 rerank가 **1.82s → 2.86s (+57%)**.
+- **결정/구현: 플래그화 (기본 bf16).** `HFSentenceGenerator(select_fp32=...)` → `load_neural_model(select_fp32=...)` → `serve_rerank.py --select-fp32`. 기본은 off(속도 우선, 1.8s, 흔들림 0.36%는 풀 깊은 borderline뿐이라 순위 무영향). rationale 비트-결정론이 요구사항일 때만 `--select-fp32`(2.8s).
 
 ---
 
@@ -125,7 +126,7 @@
 1. **학습 레시피:** `train_optimal.py --max-train-candidates 24 --epochs 5 --gpu-mem-fraction 0.75`, **best-epoch 선택 필수**(막판 발산).
 2. **데이터:** 아직 데이터-바운드 → 더 모으면 추가 상승 여지. 라벨링은 broad 쿼리에서 ~8% 영구 실패(자연 필터).
 3. **서빙:** 50후보 ~1.8s(bf16). 1초 SLA 필요 시 **후보 배치 처리**(순위 동일, 안전) 또는 풀 ~25개 제한.
-4. **rationale 결정론:** 필요하면 generator fp32(흔들림 0%) — 단 지연 +57%, 플래그로 on/off 권장.
+4. **rationale 결정론:** 기본 bf16(빠름). 비트-결정론이 필요하면 `serve_rerank.py --select-fp32`(흔들림 0%, 단 +57% 지연).
 
 ## 산출물
 

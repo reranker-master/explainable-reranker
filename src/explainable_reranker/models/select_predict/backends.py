@@ -259,6 +259,7 @@ class HFSentenceGenerator:
         compute_dtype: str = "bfloat16",
         max_length: int = 8192,
         sentence_separator: str = "\n",
+        select_fp32: bool = False,
     ):
         self.config = config
         self.gate = gate or HardConcreteGate()
@@ -268,6 +269,11 @@ class HFSentenceGenerator:
         self.compute_dtype = compute_dtype
         self.max_length = max_length
         self.sentence_separator = sentence_separator
+        # When True, run the encoder in fp32 at INFERENCE so the discrete top-k selection
+        # is fully deterministic (no bf16/padding wobble in the displayed rationale). Costs
+        # ~50% latency, so it defaults off; ranking is unaffected either way. Training always
+        # uses bf16 autocast regardless (the per-step memory budget needs it).
+        self.select_fp32 = select_fp32
         self._torch = None
         self._model = None
         self._tokenizer = None
@@ -355,13 +361,14 @@ class HFSentenceGenerator:
         )
         offsets = encoded.pop("offset_mapping")[0].tolist()
         encoded = {key: value.to(self._device) for key, value in encoded.items()}
-        # The selection (z) is a discrete top-k over these logits; at inference it must not
-        # wobble under bf16/padding numerical noise (which would change the displayed
-        # rationale and, on near-ties, the ranking). So run the encoder in fp32 when NOT
-        # training. Training keeps bf16 autocast for the per-step memory budget.
+        # The selection (z) is a discrete top-k over these logits. With select_fp32 the
+        # encoder runs in fp32 at inference so that decision is fully deterministic (no
+        # bf16/padding wobble in the displayed rationale). Off by default (faster); training
+        # always keeps bf16 autocast for the per-step memory budget.
         import contextlib
 
-        forward_ctx = self._autocast() if self._model.training else contextlib.nullcontext()
+        use_bf16 = self._model.training or not self.select_fp32
+        forward_ctx = self._autocast() if use_bf16 else contextlib.nullcontext()
         with forward_ctx:
             hidden = self._model(**encoded).last_hidden_state[0]  # [seq, H]
         pooled = []
